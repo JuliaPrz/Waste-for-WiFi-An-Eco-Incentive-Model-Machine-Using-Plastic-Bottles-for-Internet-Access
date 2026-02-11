@@ -10,7 +10,11 @@
   --muted: #98a8c7;
   --white: #ffffff;
 }
-.app-root { padding-bottom: 4rem; }
+.app-root {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
 
 * {
   box-sizing: border-box;
@@ -27,10 +31,11 @@ body {
   background: linear-gradient(180deg, var(--primary), var(--accent-blue));
   margin: 0;
   display: flex;
-  align-items: center;
-  justify-content: center;
+  flex-direction: column;
+  min-height: 100vh;
   color: var(--white);
-  -webkit-font-smoothing:antialiased;
+  -webkit-font-smoothing: antialiased;
+  /* Remove any align-items: center or justify-content: center */
 }
 
 html { font-size: 16px; }
@@ -47,6 +52,13 @@ html { font-size: 16px; }
   min-height: 40rem; /* ~640px */
 }
 
+/* Let main content grow so it pushes footer to the page bottom */
+.main-card,
+.card,
+.rating-main {
+  flex: 1 0 auto;
+}
+
 .tag {
   text-align: center;
   font-size: 1.25rem;
@@ -60,14 +72,14 @@ html { font-size: 16px; }
   line-height: 1.4;
 }
 .brand-logo {
-  max-width: 40rem; 
+  max-width: 28rem; 
   width: 70%;
   height: auto;
   display: block;
   margin: 0.5rem auto;
 }
 .hero {
-  padding: 1.75rem 0.75rem 0.375rem;
+  padding: 12rem 0.75rem 0.375rem;
   text-align: center;
 }
 .main-card {
@@ -172,15 +184,16 @@ html { font-size: 16px; }
 }
 
 .site-footer {
-  color: var(--white);
-  text-align: center;
-  margin-top: 14px;
-  position: fixed;
-  left: 0;
+  position: static;   /* no longer fixed to viewport */
+  left: auto;
   bottom: 0;
   width: 100%;
   padding: 0.75rem 0;
-  background: transparent;
+  color: var(--white);
+  text-align: center;
+  font-size: 0.95rem;
+  z-index: auto;
+  margin-top: 1rem;
 }
 
 /* Bottle modal */
@@ -319,88 +332,6 @@ html { font-size: 16px; }
   background: #143a6d;
 }
 
-/* Rating page styles */
-.rating-root {
-  width: 100%;
-  max-width: 720px;
-  margin: 1.125rem auto;
-  color: var(--white);
-  padding: 1.125rem;
-}
-.rating-hero {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  margin-bottom: 12px;
-}
-
-.rating-hero .small {
-  color: var(--muted);
-  font-size: 14px;
-}
-.rating-main {
-  background: var(--card-bg);
-  padding: 18px;
-  border-radius: 12px;
-}
-.rating-main .intro {
-  color: var(--muted);
-  font-size: 14px;
-  margin-bottom: 12px;
-}
-.question {
-  margin: 0.75rem 0;
-  padding: 0.625rem 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
-}
-.question label {
-  display: block;
-  font-weight: 600;
-  margin-bottom: 8px;
-}
-.likert {
-  display: flex;
-  gap: 8px;
-  justify-content: space-between;
-}
-.likert label {
-  flex: 1;
-  text-align: center;
-}
-.likert input {
-  position: absolute;
-  opacity: 0;
-  width: 0;
-  height: 0;
-}
-.likert span {
-  display: inline-block;
-  padding: 0.625rem 0;
-  border-radius: 0.5rem;
-  width: 100%;
-  background: rgba(255, 255, 255, 0.04);
-  color: var(--white);
-  font-weight: 700;
-  cursor: pointer;
-  transition: all 160ms ease;
-}
-.likert input:checked + span {
-  background: linear-gradient(90deg, var(--btn-insert), var(--btn-how));
-  color: var(--primary);
-  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.28);
-  transform: translateY(-2px);
-}
-.form-actions {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  justify-content: space-between;
-  margin-top: 16px;
-}
-.rating-main .btn {
-  flex: 1;
-}
-
 .timer-bar-wrap {
   width: 100%;
 }
@@ -481,3 +412,4 @@ html { font-size: 16px; }
 	font-size: 1rem;
   }
 }
+

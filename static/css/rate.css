@@ -1,0 +1,221 @@
+/* Rating page root - remove fixed height and overflow, let body handle scroll */
+.rating-root {
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  color: var(--white);
+  padding: 0;
+  min-height: 100vh; /* changed from height: 100vh */
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  overflow: visible; /* changed from overflow-y: auto */
+}
+
+/* Hero / header */
+.rating-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-top: 1.5rem;
+  position: relative;
+  padding: 0 18px;
+  flex-shrink: 0; /* prevent header from being compressed */
+}
+.back-btn {
+  position: absolute;
+  left: 8px;
+  top: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--white);
+  text-decoration: none;
+  font-size: 1.1rem;
+  font-weight: 500;
+}
+.back-btn img {
+  width: 1.5rem;
+  height: 1.5rem;
+  vertical-align: middle;
+}
+.brand-logo.medium {
+  max-width: 180px;
+  width: 60%;
+  margin: 1.5rem auto 0.5rem auto;
+  display: block;
+}
+.rating-hero .small {
+  text-align: center;
+  padding: 0 12px;
+}
+
+/* Main card for questions - no scroll container */
+.rating-main {
+  background: var(--primary);
+  padding: 18px;
+  border-radius: 12px;
+  margin: 12px;
+  flex: 0 0 auto;
+  overflow: visible;
+}
+.rating-main .intro {
+  text-align: center;
+  color: var(--muted);
+  margin: 0 0 12px 0;
+}
+
+/* Questions */
+.question {
+  margin: 0.75rem 0;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+}
+.question label {
+  display: block;
+  margin-bottom: 0.5rem;
+}
+
+/* Likert scale (1..5 left->right) */
+.likert-scale {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1.25rem;
+  min-height: 4rem;
+  background: #f7f7f7;
+  border-radius: 12px;
+  padding: 0.75rem 1rem;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
+}
+
+.likert-scale label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.likert-label {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  font-size: 1rem;
+  color: #555;
+  text-align: center;
+  width: 80px;
+  line-height: 1.2;
+}
+
+/* Center numbers inside the circle using flexbox */
+.likert-option {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  line-height: normal;
+  border-radius: 50%;
+  background: #e0e0e0;
+  color: #333;
+  text-align: center;
+  font-weight: 500;
+  font-size: 1.05rem;
+  cursor: pointer;
+  transition:
+    background 0.2s,
+    color 0.2s;
+  margin: 0 2px;
+  border: 2px solid transparent;
+}
+input[type="radio"] {
+  display: none;
+}
+input[type="radio"]:checked + .likert-option {
+  background: #1976d2;
+  color: #fff;
+  font-weight: 700;
+  border: 2px solid #1976d2;
+}
+
+/* Form actions: single centered submit button */
+.form-actions {
+  display: flex;
+  justify-content: center;
+  margin-top: 16px;
+}
+
+/* Make submit button use primary / done button styling and responsive width */
+.form-actions .done-btn {
+  width: clamp(160px, 60%, 320px);
+  display: inline-block;
+  margin: 0;
+  padding: 0.85rem 0;
+  font-size: 1.05rem;
+  background: var(--accent-blue);
+  color: #fff;
+  border: none;
+  border-radius: 0.75rem;
+  box-shadow: 0 2px 8px rgba(11, 40, 80, 0.08);
+  cursor: pointer;
+}
+
+/* Comment textarea sizing */
+.rating-main textarea#rating-comment,
+.rating-main textarea {
+  width: 100%;
+  min-width: 220px;
+  max-width: 100%;
+  min-height: 88px;
+  max-height: 320px;
+  padding: 0.75rem;
+  border-radius: 8px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  background: #fff;
+  color: var(--primary);
+  resize: vertical;
+  box-sizing: border-box;
+  font-family: inherit;
+  font-size: 1rem;
+}
+
+/* Hide scrollbar but keep scrolling on body (not containers) */
+body::-webkit-scrollbar {
+  display: none;
+}
+body {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+  margin: 0;
+  padding: 0;
+  min-height: 100vh;
+  overflow-x: hidden;
+  overflow-y: auto; /* ensure body can scroll */
+  background: linear-gradient(180deg, var(--primary) 0%, var(--accent-blue) 100%);
+  background-attachment: fixed; /* keeps gradient fixed while scrolling */
+}
+
+/* Make layout friendly on small screens */
+@media (max-width: 600px) {
+  .rating-main {
+    margin: 8px;
+    padding: 12px;
+  }
+  .likert-scale {
+    gap: 0.6rem;
+    padding: 0.5rem;
+  }
+  .likert-label {
+    width: 64px;
+    font-size: 0.92rem;
+  }
+  .likert-option {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.75rem;
+    height: 1.75rem;
+    line-height: normal;
+    font-size: 1rem;
+  }
+}
