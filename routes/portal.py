@@ -1,9 +1,59 @@
 import os
 import subprocess
-from flask import Blueprint, render_template, request, redirect, url_for, current_app, jsonify
-from services.network import get_mac_for_ip
+import uuid
+from flask import Blueprint, render_template, request, redirect, url_for, current_app, jsonify, make_response
 import db
+from services.network import get_mac_for_ip
+from db import create_session, get_session, get_session_for_device
+from datetime import datetime, timezone
+
 bp = Blueprint("portal", __name__)
+
+
+def get_device_identifier(request_obj):
+    """
+    Centralized device identifier logic.
+    Priority:
+    1. Explicit mac from request (client JS or form)
+    2. ARP lookup from IP (works on Raspberry Pi LAN)
+    3. Stable device_id cookie
+    
+    Returns: (identifier, is_cookie_based, set_cookie_flag)
+    """
+    client_ip = request_obj.remote_addr or request_obj.headers.get("X-Forwarded-For") or request_obj.headers.get("X-Real-IP")
+    
+    # 1. Check if client explicitly provided MAC
+    mac = request_obj.values.get("mac") or None
+    if request_obj.is_json:
+        try:
+            body = request_obj.get_json(silent=True) or {}
+            mac = body.get("mac") or mac
+        except Exception:
+            pass
+    
+    if mac and mac != "unknown":
+        current_app.logger.debug("Using client-provided MAC: %s", mac)
+        return mac, False, False
+    
+    # 2. Try ARP lookup (Raspberry Pi)
+    try:
+        discovered_mac = get_mac_for_ip(client_ip)
+        if discovered_mac:
+            current_app.logger.debug("Discovered MAC via ARP: %s", discovered_mac)
+            return discovered_mac, False, False
+    except Exception as e:
+        current_app.logger.debug("ARP lookup failed: %s", e)
+    
+    # 3. Use/create stable device_id cookie
+    device_id = request_obj.cookies.get("device_id")
+    if device_id:
+        current_app.logger.debug("Using existing device_id cookie: %s", device_id)
+        return f"device:{device_id}", True, False
+    
+    # Create new device_id
+    new_device_id = str(uuid.uuid4())
+    current_app.logger.debug("Created new device_id: %s", new_device_id)
+    return f"device:{new_device_id}", True, True
 
 
 @bp.route("/register", methods=("GET", "POST"))
@@ -56,36 +106,72 @@ def session_status(session_id):
 @bp.route("/api/session/lookup", methods=("GET", "POST"))
 def api_session_lookup():
     """
-    Called by captive portal client when opening the portal.
-    Returns existing session for this device if any of statuses
-    (awaiting_insertion, inserting, active) exist, otherwise creates
-    a new session with status = awaiting_insertion and returns it.
+    Captive portal session lookup.
+    Returns existing session or creates new awaiting_insertion session.
     """
-    client_ip = request.remote_addr or request.headers.get("X-Forwarded-For")
-    mac = None
-    try:
-        mac = get_mac_for_ip(client_ip)
-    except Exception:
-        mac = None
-
-    # allow client to pass a mac param (for dev/testing)
-    if request.is_json:
-        body = request.get_json()
-        mac = body.get("mac") or mac
-
-    # check for existing session for this device
-    existing = db.get_session_for_device(mac=mac, ip=client_ip, statuses=(
-        "awaiting_insertion", "inserting", "active"
-    ))
+    client_ip = request.remote_addr or request.headers.get("X-Forwarded-For") or request.headers.get("X-Real-IP")
+    
+    # Get device identifier using centralized logic
+    lookup_mac, is_cookie, set_cookie = get_device_identifier(request)
+    
+    current_app.logger.debug("Session lookup - MAC: %s, IP: %s, cookie-based: %s", lookup_mac, client_ip, is_cookie)
+    
+    # Look for existing session
+    existing = get_session_for_device(
+        mac_address=lookup_mac,
+        ip_address=client_ip,
+        statuses=('awaiting_insertion', 'inserting', 'active')
+    )
+    
+    # Validate existing session belongs to this device
     if existing:
-        current_app.logger.debug("Session lookup: returning existing session for %s/%s -> %s", mac, client_ip, existing.get("id"))
-        return jsonify({"found": True, "session": existing}), 200
-
-    # no existing session -> create awaiting_insertion
-    session_id = db.create_session(mac, client_ip, status="awaiting_insertion")
-    session = db.get_session(session_id)
-    current_app.logger.debug("Session lookup: created new awaiting_insertion session %s for %s/%s", session_id, mac, client_ip)
-    return jsonify({"found": False, "session": session}), 201
+        existing_mac = existing.get('mac_address', '')
+        if existing_mac != lookup_mac:
+            current_app.logger.warning(
+                "Session lookup: MAC mismatch - expected %s, got %s. Creating new session.",
+                lookup_mac, existing_mac
+            )
+            existing = None
+    
+    # Check if existing session is still valid
+    if existing:
+        now_ts = int(datetime.now(timezone.utc).timestamp())
+        session_end = existing.get('session_end')
+        
+        # Active session not yet expired
+        if existing['status'] == 'active' and session_end and session_end > now_ts:
+            current_app.logger.debug("Resuming active session %s (remaining: %ds)", existing['id'], session_end - now_ts)
+            resp = make_response(jsonify({"found": True, "session": existing, "resumed": True}), 200)
+            if set_cookie:
+                device_id = lookup_mac.replace("device:", "")
+                resp.set_cookie("device_id", device_id, max_age=60*60*24*365*5, path="/", samesite='Lax')
+            return resp
+        
+        # Recent inserting/awaiting session (< 10 min)
+        if existing['status'] in ('inserting', 'awaiting_insertion'):
+            created_at = existing.get('created_at', 0)
+            age = now_ts - created_at
+            if age < 600:
+                current_app.logger.debug("Resuming %s session %s (age: %ds)", existing['status'], existing['id'], age)
+                resp = make_response(jsonify({"found": True, "session": existing, "resumed": True}), 200)
+                if set_cookie:
+                    device_id = lookup_mac.replace("device:", "")
+                    resp.set_cookie("device_id", device_id, max_age=60*60*24*365*5, path="/", samesite='Lax')
+                return resp
+    
+    # Create new session
+    try:
+        session_id = create_session(lookup_mac, client_ip, status="awaiting_insertion")
+        session = get_session(session_id)
+        current_app.logger.debug("Created new session %s for %s", session_id, lookup_mac)
+        resp = make_response(jsonify({"found": False, "session": session, "resumed": False}), 201)
+        if set_cookie:
+            device_id = lookup_mac.replace("device:", "")
+            resp.set_cookie("device_id", device_id, max_age=60*60*24*365*5, path="/", samesite='Lax')
+        return resp
+    except Exception as e:
+        current_app.logger.exception("Failed to create session")
+        return jsonify({"error": "Failed to create session", "detail": str(e)}), 500
 
 
 def _get_mac_for_ip(ip):
@@ -128,3 +214,12 @@ def sensor_hit():
     session_manager = current_app.extensions["session_manager"]
     ok = session_manager.handle_bottle(session_id=session_id)
     return jsonify({"ok": bool(ok)})
+@bp.route("/api/dev/clear-device", methods=["POST"])
+def clear_device_id():
+    """DEV ONLY: Clear device_id cookie to simulate new user."""
+    if not current_app.config.get('MOCK_SENSOR'):
+        return jsonify({"error": "Only available in dev mode"}), 403
+    
+    resp = make_response(jsonify({"success": True, "message": "device_id cleared"}))
+    resp.set_cookie("device_id", "", max_age=0, path="/")
+    return resp

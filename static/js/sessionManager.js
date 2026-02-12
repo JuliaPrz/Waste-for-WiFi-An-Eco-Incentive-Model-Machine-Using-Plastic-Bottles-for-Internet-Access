@@ -1,6 +1,6 @@
 import { $, showToast } from './dom.js';
 import { formatTime, getCurrentTimestamp } from './utils.js';
-import { lookupSession as apiLookupSession, acquireInsertionLock, unlockInsertion, postBottles, activateSession as apiActivateSession } from './api/sessionApi.js';
+import { lookupSession as apiLookupSession, acquireInsertionLock, unlockInsertion, postBottles, activateSession as apiActivateSession, getSession as apiGetSession } from './api/sessionApi.js';
 import { updateButtonStates, updateConnectionStatus } from './ui.js';
 import { startSessionCountdown, stopSessionCountdown } from './timer.js';
 
@@ -8,6 +8,16 @@ let currentSessionId = null;
 let pendingSessionData = null;
 let bottleCount = 0;
 let isCommitting = false;
+let serverBottleCount = 0; // track server-side known count to avoid double-posting
+
+// Expose for timer/UI modules
+if (typeof window !== 'undefined') {
+  window.sessionManager = {
+    get pendingSessionData() { return pendingSessionData; },
+    get currentSessionId() { return currentSessionId; },
+    get bottleCount() { return bottleCount; }
+  };
+}
 
 export function getCurrentSessionId() { return currentSessionId; }
 
@@ -46,20 +56,26 @@ export async function createSession(mac_address = null, ip_address = null) {
     }
 
     const info = await res.json().catch(() => ({}));
-    // set client state to inserting and record server session id if returned
+    const returnedSession = info.session || {};
+
+    // set client state to awaiting_insertion and record server session id if returned
     pendingSessionData = {
-      id: info.session_id || info.id || null,
-      status: 'inserting',
-      bottles_inserted: 0,
+      id: info.session_id || returnedSession.id || null,
+      status: returnedSession.status || 'inserting',
+      bottles_inserted: returnedSession.bottles_inserted || 0,
+      seconds_earned: returnedSession.seconds_earned || 0,
       session_start: null,
       session_end: null,
       owner: info.owner || window.location.hostname
     };
     if (pendingSessionData.id) setCurrentSessionId(pendingSessionData.id);
 
-    console.log('createSession: insertion lock acquired, local status = inserting', pendingSessionData);
+    console.log('createSession: insertion lock acquired', pendingSessionData);
+    // Update bottle count from server state
+    bottleCount = pendingSessionData.bottles_inserted || 0;
+    serverBottleCount = pendingSessionData.bottles_inserted || 0;
     updateButtonStates(pendingSessionData);
-    return { success: true, status: 'inserting', session: pendingSessionData };
+    return { success: true, status: pendingSessionData.status, session: pendingSessionData };
   } catch (err) {
     console.error('createSession error', err);
     throw err;
@@ -108,7 +124,13 @@ export async function handleBottleInserted(sessionId, newCount = null, minutesEa
     return;
   }
 
-  bottleCount = (typeof newCount === 'number' && newCount >= 0) ? newCount : (bottleCount + 1);
+  // if server returned a count, use it as authoritative and update serverBottleCount
+  if (typeof newCount === 'number' && newCount >= 0) {
+    bottleCount = newCount;
+    serverBottleCount = newCount;
+  } else {
+    bottleCount = bottleCount + 1;
+  }
   const bottleCountEl = $('bottle-count');
   const timeEarnedEl = $('time-earned');
   if (bottleCountEl) bottleCountEl.textContent = String(bottleCount);
@@ -122,6 +144,12 @@ export async function handleBottleInserted(sessionId, newCount = null, minutesEa
 
   try { document.querySelectorAll('.only-if-no-bottle').forEach(el => el.remove()); } catch (err) { console.warn(err); }
 
+  // Hide helper text in modal once at least one bottle has been inserted
+  try {
+    const helper = document.getElementById('insert-helper');
+    if (helper && bottleCount > 0) helper.style.display = 'none';
+  } catch (e) { console.warn('hide helper error', e); }
+  
   // DO NOT start the server session on first bottle.
   // Only update local pendingSessionData so UI reflects counts while user inserts bottles.
   if (pendingSessionData) {
@@ -172,23 +200,30 @@ window.addEventListener('bottles-committed', async (ev) => {
 
     console.log('Committing', bottles, 'bottles for session', sessionId);
 
-    // Preferred: send the total count in a single request
-    let res = await postBottles(sessionId, bottles);
-    if (!res.ok) {
-      // fallback: some servers expect one-by-one increments; try loop fallback
-      console.warn('postBottles failed, falling back to single-post loop', res.status);
-      for (let i = 0; i < bottles; i++) {
-        const r = await fetch('/api/bottle', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ session_id: sessionId })
-        });
-        if (!r.ok) {
-          const body = await r.json().catch(() => ({}));
-          console.error('Failed to register bottle', i + 1, 'of', bottles, r.status, body);
-          throw new Error('Failed to register bottle');
+    // Compute delta vs what server already knows to avoid double-increment.
+    const delta = Math.max(0, bottles - (serverBottleCount || 0));
+    let res = null;
+    if (delta > 0) {
+      // Preferred: send only the delta
+      res = await postBottles(sessionId, delta);
+      if (!res || !res.ok) {
+        // fallback: some servers expect one-by-one increments; try loop fallback
+        console.warn('postBottles failed, falling back to per-bottle POST for delta');
+        for (let i = 0; i < delta; i++) {
+          const r = await fetch('/api/bottle', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session_id: sessionId })
+          });
+          if (!r.ok) {
+            const body = await r.json().catch(() => ({}));
+            console.error('Failed to register bottle', i + 1, 'of', delta, r.status, body);
+            throw new Error('Failed to register bottle');
+          }
         }
       }
+    } else {
+      console.log('No delta to post - server already has the bottles');
     }
 
     // Activate session on server (server will set status -> active and set start/end)
@@ -210,6 +245,9 @@ window.addEventListener('bottles-committed', async (ev) => {
         session_start: sessionPayload.session_start || null,
         session_end: sessionPayload.session_end || null
       };
+      // sync server-known count after successful commit/activate
+      serverBottleCount = pendingSessionData.bottles_inserted || serverBottleCount;
+      bottleCount = pendingSessionData.bottles_inserted || 0;
       setCurrentSessionId(sessionPayload.id);
       try {
         startSessionCountdown(pendingSessionData, async () => {
@@ -289,6 +327,20 @@ export async function lookupSession() {
     console.log('lookupSession: requesting /api/session/lookup (via api module)');
     const body = await apiLookupSession();
     const session = body.session || body;
+    const resumed = body.resumed || false;
+    
+    if (resumed) {
+      console.log('lookupSession: resumed existing session', session.id, 'status:', session.status);
+      // If active session resumed, start countdown immediately
+      if (session.status === 'active' && session.session_end) {
+        const now = Math.floor(Date.now() / 1000);
+        const remaining = Math.max(0, session.session_end - now);
+        console.log('Resuming active session with', remaining, 'seconds remaining');
+      }
+    } else {
+      console.log('lookupSession: created new session', session.id);
+    }
+    
     loadSession(session);
     return session;
   } catch (err) {
@@ -301,38 +353,61 @@ export async function lookupSession() {
 // (the bottles-committed handler already sets pendingSessionData; ensure it uses same logic)
 
 export async function cancelInsertion() {
-  console.log('cancelInsertion: reverting to awaiting_insertion');
+  console.log('cancelInsertion: reverting session status');
 
-  if (pendingSessionData) {
-    pendingSessionData.status = 'awaiting_insertion';
-    pendingSessionData.bottles_inserted = 0;
-    pendingSessionData.session_start = null;
-    pendingSessionData.session_end = null;
-  } else {
-    pendingSessionData = { id: null, status: 'awaiting_insertion', bottles_inserted: 0 };
-  }
+  const sessionId = currentSessionId || pendingSessionData?.id;
+  const currentStatus = pendingSessionData?.status;
+  const hasBottles = (pendingSessionData?.bottles_inserted || 0) > 0;
 
-  // clear local session id
-  setCurrentSessionId(null);
-
-  // update UI
+  // Release server-side insertion lock (server will determine correct status)
   try {
-    updateButtonStates(pendingSessionData);
-    updateConnectionStatus(false);
-  } catch (err) {
-    console.warn('cancelInsertion: UI update error', err);
-  }
-
-  // best-effort: release server-side insertion lock
-  try {
-    const res = await fetch('/api/session/unlock', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+    const res = await fetch('/api/session/unlock', { 
+      method: 'POST', 
+      headers: { 'Content-Type': 'application/json' } 
+    });
+    
     if (res.ok) {
-      try { showToast('Insertion cancelled', 'info', 3000); } catch {}
       console.log('cancelInsertion: server-side insertion lock released');
+      
+      // Refresh session state from server
+      if (sessionId) {
+        try {
+          const refreshRes = await fetch(`/api/session/${sessionId}`);
+          if (refreshRes.ok) {
+            const refreshedSession = await refreshRes.json();
+            pendingSessionData = refreshedSession;
+            console.log('Refreshed session after cancel:', refreshedSession);
+            updateButtonStates(refreshedSession);
+            updateConnectionStatus(refreshedSession.status === 'active');
+            try { 
+              showToast(
+                hasBottles ? 'Resumed active session' : 'Insertion cancelled', 
+                'info', 
+                3000
+              ); 
+            } catch {}
+            return;
+          }
+        } catch (err) {
+          console.warn('Failed to refresh session after cancel', err);
+        }
+      }
+      
+      // Fallback: update local state based on bottles
+      if (hasBottles) {
+        pendingSessionData.status = 'active';
+        try { showToast('Resumed active session', 'info', 3000); } catch {}
+      } else {
+        pendingSessionData.status = 'awaiting_insertion';
+        setCurrentSessionId(null);
+        try { showToast('Insertion cancelled', 'info', 3000); } catch {}
+      }
+      
+      updateButtonStates(pendingSessionData);
+      updateConnectionStatus(pendingSessionData.status === 'active');
     } else {
       const body = await res.json().catch(() => ({}));
       console.warn('cancelInsertion: unlock returned non-OK', res.status, body);
-      try { showToast(body.message || 'Failed to release lock', 'warning', 4000); } catch {}
     }
   } catch (err) {
     console.warn('cancelInsertion: unlock request failed', err);
@@ -360,6 +435,3 @@ function makeExpireCallback(sessionId) {
   };
 }
 
-// Example usage in bottles-committed handler (after setting pendingSessionData):
-// startSessionCountdown(pendingSessionData, makeExpireCallback(pendingSessionData.id));
-// ...existing code...

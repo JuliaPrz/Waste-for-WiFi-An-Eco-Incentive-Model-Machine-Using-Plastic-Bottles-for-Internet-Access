@@ -15,59 +15,191 @@ import { updateConnectionStatus } from './ui.js';
 
 export function initMockDevPanel() {
   const panel = document.getElementById('mock-dev-panel');
+  if (!panel) return; // nothing to do if panel not present
+
   const dragHandle = document.getElementById('mock-drag-handle');
   const toggleBtn = document.getElementById('mock-toggle-btn');
   const mockBody = document.getElementById('mock-body');
   const bottleInsertBtn = document.getElementById('mock-bottle-insert-btn');
+  const startSessionBtn = document.getElementById('mock-start-session-btn');
+  const stopSessionBtn = document.getElementById('mock-stop-session-btn');
   const sessionInfo = document.getElementById('mock-session-info');
 
-  if (!panel) return;
+  // Make panel draggable only if drag handle exists
+  if (dragHandle) {
+    dragHandle.addEventListener('mousedown', dragStart);
+    document.addEventListener('mousemove', drag);
+    document.addEventListener('mouseup', dragEnd);
+  }
 
-  // Make panel draggable
-  dragHandle.addEventListener('mousedown', dragStart);
-  document.addEventListener('mousemove', drag);
-  document.addEventListener('mouseup', dragEnd);
+  // Toggle collapse (guard)
+  if (toggleBtn && mockBody) {
+    toggleBtn.addEventListener('click', () => {
+      mockBody.classList.toggle('collapsed');
+      toggleBtn.textContent = mockBody.classList.contains('collapsed') ? '+' : '−';
+    });
+  }
 
-  // Toggle collapse
-  toggleBtn.addEventListener('click', () => {
-    mockBody.classList.toggle('collapsed');
-    toggleBtn.textContent = mockBody.classList.contains('collapsed') ? '+' : '−';
-  });
+  // Mock bottle insert (guard)
+  if (bottleInsertBtn) {
+    bottleInsertBtn.addEventListener('click', async () => {
+      // ✅ Get current session ID
+      let sessionId = window.mockSessionId || getCurrentSessionId();
+      
+      // If no session id yet, try to perform the portal lookup (session is assigned at page load)
+      if (!sessionId) {
+        try {
+          const sm = await import('./sessionManager.js');
+          const session = await sm.lookupSession();
+          sessionId = session?.id || session?.session?.id || getCurrentSessionId();
+          if (sessionId) window.mockSessionId = sessionId;
+        } catch (e) {
+          console.warn('lookupSession fallback failed', e);
+        }
+      }
 
-  // Mock bottle insert
-  bottleInsertBtn.addEventListener('click', async () => {
-    // If no session id yet, try to perform the portal lookup (session is assigned at page load)
-    if (!window.mockSessionId) {
+      // ✅ Check if modal is open (user is in insertion mode)
+      const isModalOpen = document.getElementById('modal-insert-bottle')?.classList.contains('active');
+      
+      if (!sessionId) {
+        showToast('No active session. Please click "Insert Bottle" first.', 'error');
+        return;
+      }
+
       try {
-        // use the session manager lookup to ensure a session exists for this device
-        const sm = await import('./sessionManager.js');
-        await sm.lookupSession();
-      } catch (e) {
-        console.warn('lookupSession fallback failed', e);
-      }
-      // proceed — server will respond with error if still no session
-    }
+        const response = await fetch('/api/bottle', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id: sessionId })
+        });
 
-    try {
-      const response = await fetch('/api/bottle', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: window.mockSessionId })
-      });
-      const data = await response.json();
-      if (response.ok) {
-        sessionInfo.innerHTML = `✅ Session ID: ${window.mockSessionId}<br>Bottles: ${data.bottles_inserted}<br>Time: ${data.minutes_earned} min`;
-        showToast(`Bottle inserted! +${data.minutes_earned} min`, 'success');
-        // Inform session manager about the insertion so it can enable Done and start session
-        try { bottleInserted(window.mockSessionId, data.bottles_inserted, data.minutes_earned); } catch (err) { console.error('bottleInserted error', err); }
-      } else {
-        showToast(data.error || 'Failed to insert bottle', 'error');
+        // ✅ Check content type before parsing
+        const contentType = response.headers.get('content-type');
+        if (!contentType || !contentType.includes('application/json')) {
+          const text = await response.text();
+          console.error('❌ Expected JSON but got:', text.substring(0, 200));
+          showToast('Server returned invalid response (not JSON)', 'error', 5000);
+          return;
+        }
+
+        const data = await response.json();
+        
+        if (response.ok) {
+          if (sessionInfo) {
+            const status = data.status || 'active';
+            const endTime = data.session_end ? new Date(data.session_end * 1000).toLocaleTimeString() : 'N/A';
+            sessionInfo.innerHTML = `✅ Session ID: ${sessionId}<br>Status: ${status}<br>Bottles: ${data.bottles_inserted}<br>Time: ${data.minutes_earned} min<br>Ends: ${endTime}`;
+          }
+          showToast(`Bottle inserted! +2 min (Total: ${data.minutes_earned} min)`, 'success');
+          
+          // ✅ If modal is open, trigger the registerBottle to update UI
+          if (isModalOpen) {
+            try {
+              const { registerBottle } = await import('./timer.js');
+              registerBottle();
+            } catch (err) {
+              console.error('registerBottle error', err);
+            }
+          }
+          
+          // ✅ Notify session manager
+          try { 
+            bottleInserted(sessionId, data.bottles_inserted, data.minutes_earned); 
+          } catch (err) { 
+            console.error('bottleInserted error', err); 
+          }
+        } else {
+          // ✅ Better error handling
+          const errorMsg = data.error || data.message || 'Failed to insert bottle';
+          showToast(`❌ ${errorMsg}`, 'error', 5000);
+          console.error('Bottle insert failed:', data);
+          
+          // ✅ If session is expired/disconnected, suggest starting new session
+          if (errorMsg.includes('not accepting bottles') || errorMsg.includes('expired')) {
+            showToast('Session ended. Click "Insert Bottle" to start new session.', 'info', 5000);
+          }
+        }
+      } catch (error) {
+        console.error('Mock bottle insert error:', error);
+        showToast(`Connection error: ${error.message}`, 'error', 5000);
       }
-    } catch (error) {
-      console.error('Mock bottle insert error:', error);
-      showToast('Connection error', 'error');
-    }
-  });
+    });
+  }
+
+  // Start new session (guard)
+  if (startSessionBtn) {
+    startSessionBtn.addEventListener('click', async () => {
+      try {
+        // Clear device_id cookie to simulate completely new user
+        try {
+          await fetch('/api/dev/clear-device', { method: 'POST' });
+          document.cookie = 'device_id=; Max-Age=0; path=/';
+        } catch (e) { console.warn('Failed to clear device_id', e); }
+
+        // Best-effort stop/disconnect any current session
+        const sid = window.mockSessionId || (typeof getCurrentSessionId === 'function' ? getCurrentSessionId() : null);
+        if (sid) {
+          try {
+            await fetch(`/api/session/${sid}/status`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ session_id: sid, status: 'expired' })
+            });
+          } catch (e) { /* ignore */ }
+        }
+
+        // Clear local storage
+        localStorage.removeItem('session_id');
+        window.mockSessionId = null;
+
+        // Request new session (will get fresh device_id)
+        await createSession();
+        showToast('Started new session as new user', 'success');
+        await refreshSessionInfo();
+      } catch (err) {
+        console.error('Start session error', err);
+        showToast('Failed to start session', 'error');
+      }
+    });
+  }
+
+  // Stop current session (guard)
+  if (stopSessionBtn) {
+    stopSessionBtn.addEventListener('click', async () => {
+      const sid = window.mockSessionId || getCurrentSessionId();
+      if (!sid) {
+        showToast('No session to stop', 'error');
+        return;
+      }
+
+      const payload = { session_id: sid, status: 'expired' }; // use expired instead of disconnected
+      const attempts = [
+        { url: `/api/session/${sid}/status`, method: 'POST' },
+        { url: '/api/session/status', method: 'POST' }
+      ];
+
+      let success = false;
+      for (const a of attempts) {
+        try {
+          const res = await fetch(a.url, {
+            method: a.method,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          if (res.ok) { success = true; break; }
+        } catch (e) { /* try next */ }
+      }
+
+      if (success) {
+        showToast('Session stopped (expired)', 'success');
+        const evt = new CustomEvent('session-updated', { detail: { id: sid, status: 'expired' } }); // dispatch expired
+        window.dispatchEvent(evt);
+        await refreshSessionInfo();
+      } else {
+        showToast('Failed to stop session (no endpoint)', 'error');
+      }
+    });
+  }
 
   async function refreshSessionInfo() {
     try {
@@ -77,7 +209,7 @@ export function initMockDevPanel() {
         const now = Math.floor(Date.now() / 1000);
         const status = session.status || 'awaiting_insertion';
         const remaining = session.session_end ? Math.max(0, session.session_end - now) : 0;
-        sessionInfo.innerHTML = `Session ID: ${sid || 'N/A'}<br>Status: ${status}${status === 'active' ? ` (expires in ${Math.floor(remaining/60)}m ${remaining%60}s)` : ''}<br>Bottles: ${session.bottles_inserted || 0}`;
+        if (sessionInfo) sessionInfo.innerHTML = `Session ID: ${sid || 'N/A'}<br>Status: ${status}${status === 'active' ? ` (expires in ${Math.floor(remaining/60)}m ${remaining%60}s)` : ''}<br>Bottles: ${session.bottles_inserted || 0}`;
       } else if (sid) {
         sessionInfo.innerHTML = `Session ID: ${sid}<br>Status: unknown`;
       } else {
@@ -99,7 +231,7 @@ export function initMockDevPanel() {
       const status = s.status || 'awaiting_insertion';
       const now = Math.floor(Date.now() / 1000);
       const remaining = s.session_end ? Math.max(0, s.session_end - now) : 0;
-      sessionInfo.innerHTML = `Session ID: ${sid || 'N/A'}<br>Status: ${status}${status === 'active' ? ` (expires in ${Math.floor(remaining/60)}m ${remaining%60}s)` : ''}<br>Bottles: ${s.bottles_inserted || 0}`;
+      if (sessionInfo) sessionInfo.innerHTML = `Session ID: ${sid || 'N/A'}<br>Status: ${status}${status === 'active' ? ` (expires in ${Math.floor(remaining/60)}m ${remaining%60}s)` : ''}<br>Bottles: ${s.bottles_inserted || 0}`;
     } catch (e) {
       // ignore
     }
@@ -140,10 +272,10 @@ export function initMockDevPanel() {
   }
 }
 
-function showToast(message, type = 'info') {
+function showToast(message, type = 'info', duration = 3000) {
   // Reuse existing toast system
   if (window.showToast) {
-    window.showToast(message, type);
+    window.showToast(message, type, duration);
   } else {
     console.log(`[TOAST ${type}]`, message);
   }

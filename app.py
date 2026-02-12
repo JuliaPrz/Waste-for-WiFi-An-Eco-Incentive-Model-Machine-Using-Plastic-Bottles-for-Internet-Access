@@ -1,7 +1,9 @@
-from flask import Flask, send_from_directory, render_template, request, jsonify
+from flask import Flask, make_response, send_from_directory, render_template, request, jsonify
 from pathlib import Path
 from datetime import datetime, timezone
 import db
+import threading
+import time
 
 def create_app(test_config=None):
     app = Flask(__name__, instance_relative_config=True)
@@ -10,6 +12,8 @@ def create_app(test_config=None):
         DB_PATH=str(Path(app.instance_path) / "wifi_portal.db"),
         SESSION_DURATION=300,
         MOCK_SENSOR=True,
+        STALE_SESSION_AGE=600,       # seconds before awaiting_insertion is considered stale
+        CLEANUP_INTERVAL=60,        # how often to run cleanup (seconds)
     )
 
     if test_config:
@@ -20,6 +24,28 @@ def create_app(test_config=None):
     # Initialize DB and ensure teardown is registered
     db.init_db(app)
     app.teardown_appcontext(db.close_db)
+
+    # start background cleanup thread to expire stale/finished sessions
+    def _cleanup_loop(application):
+        with application.app_context():
+            while True:
+                try:
+                    stale_awaiting = db.expire_stale_awaiting_sessions(
+                        application.config.get("STALE_SESSION_AGE", 600)
+                    )
+                    finished_active = db.expire_finished_active_sessions()
+                    if stale_awaiting or finished_active:
+                        application.logger.debug(
+                            "Session cleanup: expired %d stale awaiting_insertion, %d finished active",
+                            stale_awaiting,
+                            finished_active,
+                        )
+                except Exception as e:
+                    application.logger.exception("Session cleanup error: %s", e)
+                time.sleep(application.config.get("CLEANUP_INTERVAL", 60))
+
+    t = threading.Thread(target=_cleanup_loop, args=(app,), daemon=True)
+    t.start()
 
     # Blueprints (keep routing organized in routes/)
     from routes.portal import bp as portal_bp
@@ -54,28 +80,78 @@ def create_app(test_config=None):
 
     # Bottle registration
     @app.route("/api/bottle", methods=["POST"])
-    def register_bottle():
-        data = request.get_json() or {}
-        session_id = data.get("session_id")
+    def insert_bottle():
+        """Handle bottle insertion - allows both 'inserting' and 'active' statuses"""
+        data = request.get_json()
+        session_id = data.get('session_id')
+        count = data.get('count', 1)  # Allow bulk insert
+
         if not session_id:
-            return jsonify({"error": "No session_id provided"}), 400
+            return jsonify({'error': 'session_id required'}), 400
+
+        try:
+            session_id = int(session_id)
+        except (ValueError, TypeError):
+            return jsonify({'error': 'Invalid session_id'}), 400
 
         session = db.get_session(session_id)
         if not session:
-            return jsonify({"error": "Invalid session"}), 400
+            return jsonify({'error': 'Session not found'}), 404
 
-        if session["status"] not in (db.STATUS_INSERTING, db.STATUS_AWAITING_INSERTION):
-            return jsonify({"error": "Session not accepting bottles"}), 400
+        # ✅ Allow bottles for both 'inserting' and 'active' statuses
+        if session.get('status') not in ['inserting', 'active']:
+            return jsonify({
+                'error': f'Session is not accepting bottles (status: {session.get("status")})'
+            }), 400
 
-        db.add_bottle_to_session(session_id, seconds_per_bottle=120)
-        updated_session = db.get_session(session_id)
+        # Update bottle count and total seconds earned
+        bottles_before = session.get('bottles_inserted', 0)
+        seconds_before = session.get('seconds_earned', 0)
+        
+        new_bottles = bottles_before + count
+        new_total_seconds = seconds_before + (count * 120)  # Track total seconds earned
+
+        # ✅ Calculate session_end based on current status
+        session_end = session.get('session_end')
+        current_time = int(datetime.now(timezone.utc).timestamp())
+        
+        if session.get('status') == 'active':
+            # ✅ For ACTIVE sessions: extend from current remaining time
+            # If session_end exists and hasn't expired, add to remaining time
+            if session_end and session_end > current_time:
+                # Extend from current end time
+                session_end += (count * 120)
+            else:
+                # Session expired, restart from now
+                session_end = current_time + (count * 120)
+        else:
+            # ✅ For INSERTING sessions: session_end not set yet (will be set on activation)
+            session_end = None
+
+        # Update database
+        success = db.update_session(session_id, {
+            'bottles_inserted': new_bottles,
+            'seconds_earned': new_total_seconds,
+            'session_end': session_end
+        })
+
+        if not success:
+            return jsonify({'error': 'Failed to update session'}), 500
+
+        # Calculate remaining time for response
+        remaining_seconds = 0
+        if session_end and session_end > current_time:
+            remaining_seconds = session_end - current_time
 
         return jsonify({
-            "success": True,
-            "bottles_inserted": updated_session["bottles_inserted"],
-            "seconds_earned": updated_session["seconds_earned"],
-            "minutes_earned": updated_session["seconds_earned"] // 60
-        })
+            'session_id': session_id,
+            'bottles_inserted': new_bottles,
+            'minutes_earned': new_total_seconds // 60,
+            'seconds_earned': new_total_seconds,
+            'session_end': session_end,
+            'remaining_seconds': remaining_seconds,
+            'status': session.get('status')
+        }), 200
 
     # Start / activate session
     @app.route("/api/session/<int:session_id>/activate", methods=["POST"])
@@ -112,44 +188,64 @@ def create_app(test_config=None):
     # Create session / acquire insertion lock (returns 409 if busy)
     @app.route("/api/session/create", methods=["POST"])
     def create_session_api():
+        """Create or acquire insertion lock for a session."""
+        from routes.portal import get_device_identifier
+        
+        client_ip = request.remote_addr or request.headers.get("X-Forwarded-For")
+        
+        # Use centralized device identifier logic
+        mac_address, is_cookie, set_cookie = get_device_identifier(request)
+        
         try:
-            data = request.get_json() or {}
-            mac_address = data.get("mac_address") or request.remote_addr
-            ip_address = data.get("ip_address") or request.remote_addr
-
-            # Try DB-level acquire_insertion_lock (atomic across processes)
-            session_id = db.acquire_insertion_lock(mac_address=mac_address, ip_address=ip_address)
-            if session_id is None:
-                return jsonify({
-                    "error": "machine_busy",
-                    "message": "Another user is currently inserting a bottle"
-                }), 409
-
+            session_id = db.acquire_insertion_lock(mac_address=mac_address, ip_address=client_ip)
+            
+            if not session_id:
+                return jsonify({"error": "Machine is currently busy", "message": "Another user is inserting bottles"}), 409
+            
             session = db.get_session(session_id)
-            return jsonify({
-                "success": True,
-                "session_id": session_id,
-                "status": session.get("status") if session else "inserting"
-            }), 201
+            resp = make_response(jsonify({"session_id": session_id, "session": session}), 200)
+            if set_cookie:
+                device_id = mac_address.replace("device:", "")
+                resp.set_cookie("device_id", device_id, max_age=60*60*24*365*5, path="/", samesite='Lax')
+            return resp
         except Exception as e:
-            app.logger.exception("Error in /api/session/create")
-            return jsonify({"error": "internal_server_error", "message": str(e)}), 500
+            app.logger.error(f"Error in /api/session/create: {e}", exc_info=True)
+            return jsonify({"error": "Failed to create session", "detail": str(e)}), 500
 
     # Simple unlock endpoint (best-effort) — transition inserting -> awaiting_insertion for this device
     @app.route("/api/session/unlock", methods=["POST"])
-    def release_insertion_lock():
+    def unlock_insertion():
+        """Release insertion lock without activating session."""
+        from routes.portal import get_device_identifier
+    
         try:
-            data = request.get_json(silent=True) or {}
-            client_ip = request.remote_addr
-            mac = data.get("mac_address") or data.get("mac") or None
-
+            client_ip = request.remote_addr or request.headers.get("X-Forwarded-For")
+            
+            # Use centralized device identifier logic
+            mac_address, is_cookie, set_cookie = get_device_identifier(request)
+            
             # Find any inserting session for this device
-            sess = db.get_session_for_device(mac=mac, ip=client_ip, statuses=(db.STATUS_INSERTING,))
-            if not sess:
-                return jsonify({"success": True, "message": "No inserting session found"}), 200
-
-            db.update_session_status(sess["id"], db.STATUS_AWAITING_INSERTION)
-            return jsonify({"success": True}), 200
+            inserting_session = db.get_session_for_device(
+                mac_address=mac_address,
+                ip_address=client_ip,
+                statuses=('inserting',)
+            )
+            
+            if inserting_session:
+                session_id = inserting_session['id']
+                # If bottles were inserted, revert to active; otherwise expire
+                if inserting_session.get('bottles_inserted', 0) > 0:
+                    db.update_session_status(session_id, db.STATUS_ACTIVE)
+                    app.logger.info(f"Reverted session {session_id} to active after unlock")
+                else:
+                    db.update_session_status(session_id, db.STATUS_EXPIRED)
+                    app.logger.info(f"Expired session {session_id} after unlock with no bottles")
+            
+            resp = make_response(jsonify({"success": True, "message": "Insertion lock released"}), 200)
+            if set_cookie:
+                device_id = mac_address.replace("device:", "")
+                resp.set_cookie("device_id", device_id, max_age=60*60*24*365*5, path="/", samesite='Lax')
+            return resp
         except Exception as e:
             app.logger.exception("Error in /api/session/unlock")
             return jsonify({"error": "internal_server_error", "message": str(e)}), 500

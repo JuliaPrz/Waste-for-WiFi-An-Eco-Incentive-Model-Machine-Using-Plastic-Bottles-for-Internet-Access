@@ -12,10 +12,13 @@ let currentSessionId = null;
 // session countdown (exported for sessionManager.js)
 let sessionTimerInterval = null;
 
-export function startBottleTimer(sessionId = null) {
+// ✅ Accept initial values as parameters
+export function startBottleTimer(sessionId = null, initialBottles = 0, initialSeconds = 0) {
   currentSessionId = sessionId || currentSessionId || null;
   bottleTimeRemaining = BOTTLE_TIMER_DURATION;
-  bottleCount = 0;
+  
+  // ✅ Initialize with existing values instead of resetting to 0
+  bottleCount = initialBottles;
 
   const progressBar = $('bottle-progress');
   const countdownEl = $('bottle-countdown');
@@ -24,14 +27,17 @@ export function startBottleTimer(sessionId = null) {
   const doneBtn = $('btn-done-insert');
   const helper = $('insert-helper');
 
-  if (bottleCountEl) bottleCountEl.textContent = '0';
-  if (timeEarnedEl) timeEarnedEl.textContent = '0 minutes';
+  // ✅ Display current values instead of hardcoded 0
+  if (bottleCountEl) bottleCountEl.textContent = String(bottleCount);
+  if (timeEarnedEl) timeEarnedEl.textContent = `${Math.floor(initialSeconds / 60)} minutes`;
   if (countdownEl) countdownEl.textContent = formatSeconds(bottleTimeRemaining);
   if (progressBar) progressBar.style.width = '100%';
-  if (helper) helper.style.display = 'block';
+  
+  // ✅ Show/hide helper based on existing bottles
+  if (helper) helper.style.display = bottleCount > 0 ? 'none' : 'block';
   if (doneBtn) {
-    doneBtn.disabled = true;
-    doneBtn.classList.add('disabled');
+    doneBtn.disabled = bottleCount === 0;
+    doneBtn.classList.toggle('disabled', bottleCount === 0);
   }
 
   if (bottleTimerInterval) {
@@ -74,25 +80,16 @@ function handleTimerEnd() {
   window.dispatchEvent(new CustomEvent('bottles-committed', {
     detail: { session_id: currentSessionId, bottles: bottleCount, seconds: secondsEarned }
   }));
-  // reset local counters
-  bottleCount = 0;
-  bottleTimeRemaining = BOTTLE_TIMER_DURATION;
-
-  // update UI (safely)
+  // ✅ Don't reset counters here - they'll be reset when modal reopens with fresh server data
+  
+  // update UI after commit (optional - modal is closing anyway)
   const progressBar = $('bottle-progress');
   const countdownEl = $('bottle-countdown');
-  const bottleCountEl = $('bottle-count');
-  const timeEarnedEl = $('time-earned');
-  const doneBtn = $('btn-done-insert');
-  const helper = $('insert-helper');
-  if (bottleCountEl) bottleCountEl.textContent = '0';
-  if (timeEarnedEl) timeEarnedEl.textContent = '0 minutes';
-  if (countdownEl) countdownEl.textContent = formatSeconds(bottleTimeRemaining);
+  if (countdownEl) countdownEl.textContent = formatSeconds(BOTTLE_TIMER_DURATION);
   if (progressBar) progressBar.style.width = '100%';
-  if (helper) helper.style.display = 'block';
-  if (doneBtn) { doneBtn.disabled = true; doneBtn.classList.add('disabled'); }
 }
 
+// ✅ registerBottle now increments from current state
 export function registerBottle() {
   bottleCount += 1;
   const bottleCountEl = $('bottle-count');

@@ -12,14 +12,12 @@ STATUS_AWAITING_INSERTION = 'awaiting_insertion'
 STATUS_INSERTING = 'inserting'
 STATUS_ACTIVE = 'active'
 STATUS_EXPIRED = 'expired'
-STATUS_DISCONNECTED = 'disconnected'
 
 ALL_SESSION_STATUSES = (
     STATUS_AWAITING_INSERTION,
     STATUS_INSERTING,
     STATUS_ACTIVE,
     STATUS_EXPIRED,
-    STATUS_DISCONNECTED,
 )
 
 DEFAULT_SESSION_STATUS = STATUS_AWAITING_INSERTION
@@ -71,38 +69,7 @@ def _create_tables(db):
             status TEXT DEFAULT 'awaiting_insertion',
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
-            CHECK (status IN ('awaiting_insertion', 'inserting', 'active', 'expired', 'disconnected'))
-        )
-    ''')
-    
-    # RATINGS TABLE
-    db.execute('''
-        CREATE TABLE IF NOT EXISTS ratings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id INTEGER NOT NULL,
-            q1 INTEGER CHECK (q1 BETWEEN 1 AND 5),
-            q2 INTEGER CHECK (q2 BETWEEN 1 AND 5),
-            q3 INTEGER CHECK (q3 BETWEEN 1 AND 5),
-            q4 INTEGER CHECK (q4 BETWEEN 1 AND 5),
-            q5 INTEGER CHECK (q5 BETWEEN 1 AND 5),
-            q6 INTEGER CHECK (q6 BETWEEN 1 AND 5),
-            q7 INTEGER CHECK (q7 BETWEEN 1 AND 5),
-            q8 INTEGER CHECK (q8 BETWEEN 1 AND 5),
-            q9 INTEGER CHECK (q9 BETWEEN 1 AND 5),
-            q10 INTEGER CHECK (q10 BETWEEN 1 AND 5),
-            comment TEXT,
-            submitted_at INTEGER NOT NULL,
-            FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
-        )
-    ''')
-    
-    # BOTTLE_LOGS TABLE
-    db.execute('''
-        CREATE TABLE IF NOT EXISTS bottle_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id INTEGER NOT NULL,
-            detected_at INTEGER NOT NULL,
-            FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            CHECK (status IN ('awaiting_insertion', 'inserting', 'active', 'expired'))
         )
     ''')
     
@@ -116,7 +83,6 @@ def _create_tables(db):
             CHECK (event_type IN (
                 'session_started',
                 'session_expired',
-                'session_disconnected',
                 'bottle_inserted',
                 'rating_submitted'
             ))
@@ -127,8 +93,6 @@ def _create_tables(db):
     db.execute('CREATE INDEX IF NOT EXISTS idx_sessions_mac ON sessions(mac_address)')
     db.execute('CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status)')
     db.execute('CREATE INDEX IF NOT EXISTS idx_sessions_created ON sessions(created_at)')
-    db.execute('CREATE INDEX IF NOT EXISTS idx_ratings_session ON ratings(session_id)')
-    db.execute('CREATE INDEX IF NOT EXISTS idx_bottle_logs_session ON bottle_logs(session_id)')
     db.execute('CREATE INDEX IF NOT EXISTS idx_system_logs_type ON system_logs(event_type)')
     db.execute('CREATE INDEX IF NOT EXISTS idx_system_logs_created ON system_logs(created_at)')
 
@@ -202,8 +166,6 @@ def update_session_status(session_id, status):
     
     if status == STATUS_EXPIRED:
         log_system_event('session_expired', f'Session {session_id} expired')
-    elif status == STATUS_DISCONNECTED:
-        log_system_event('session_disconnected', f'Session {session_id} disconnected')
 
 def start_session(session_id):
     """Activate session and set start/end times."""
@@ -386,53 +348,250 @@ def get_rating_stats():
     ''').fetchone()
     return dict(stats) if stats else {}
 
-def get_session_for_device(mac=None, ip=None, statuses=ALL_SESSION_STATUSES):
+def get_session_for_device(mac_address=None, ip_address=None, statuses=None):
     """
-    Return the most recent session for a device identified by MAC or IP
-    where session.status is one of `statuses`. Returns dict or None.
+    Find the most recent session for a device (by mac or ip) with given statuses.
+    Returns session dict or None.
+    
+    Best practice: prefer MAC lookup over IP for device identification.
     """
+    if not mac_address and not ip_address:
+        return None
+    
     db = get_db()
     cur = db.cursor()
-
-    # discover available columns in sessions table
-    cur.execute("PRAGMA table_info(sessions)")
-    cols_info = cur.fetchall()
-    if not cols_info:
-        return None
-    available_cols = [r[1] for r in cols_info]
-
-    # candidate names for mac/ip columns
-    mac_candidates = [c for c in ("mac", "mac_address", "client_mac") if c in available_cols]
-    ip_candidates = [c for c in ("ip", "ip_address", "client_ip") if c in available_cols]
-    if "status" not in available_cols:
-        return None
-
-    where_clauses = []
+    
+    # Build WHERE clause
+    where_parts = []
     params = []
-
-    if mac and mac_candidates:
-        mac_clause = "(" + " OR ".join(f"{col} = ?" for col in mac_candidates) + ")"
-        where_clauses.append(mac_clause)
-        params.extend([mac] * len(mac_candidates))
-
-    if ip and ip_candidates:
-        ip_clause = "(" + " OR ".join(f"{col} = ?" for col in ip_candidates) + ")"
-        where_clauses.append(ip_clause)
-        params.extend([ip] * len(ip_candidates))
-
-    # status IN (...)
-    status_placeholders = ",".join(["?"] * len(statuses))
-    where_clauses.append(f"status IN ({status_placeholders})")
-    params.extend(statuses)
-
-    where_sql = " AND ".join(where_clauses)
-    sql = f"SELECT * FROM sessions WHERE {where_sql} ORDER BY id DESC LIMIT 1"
-    cur.execute(sql, tuple(params))
+    
+    if mac_address:
+        where_parts.append("mac_address = ?")
+        params.append(mac_address)
+    
+    if ip_address:
+        where_parts.append("ip_address = ?")
+        params.append(ip_address)
+    
+    if statuses:
+        placeholders = ','.join(['?'] * len(statuses))
+        where_parts.append(f"status IN ({placeholders})")
+        params.extend(statuses)
+    
+    where_clause = " OR ".join(where_parts[:2] if len(where_parts) > 2 else where_parts[:1])
+    if statuses and len(where_parts) > 2:
+        where_clause = f"({where_clause}) AND {where_parts[2]}"
+    
+    query = f"""
+        SELECT id, mac_address, ip_address, bottles_inserted, seconds_earned,
+               session_start, session_end, status, created_at, updated_at
+        FROM sessions
+        WHERE {where_clause}
+        ORDER BY updated_at DESC, created_at DESC
+        LIMIT 1
+    """
+    
+    cur.execute(query, tuple(params))
     row = cur.fetchone()
+    
     if not row:
         return None
-    cols = [c[0] for c in cur.description]
-    return dict(zip(cols, row))
+    
+    return {
+        'id': row[0],
+        'mac_address': row[1],
+        'ip_address': row[2],
+        'bottles_inserted': row[3],
+        'seconds_earned': row[4],
+        'session_start': row[5],
+        'session_end': row[6],
+        'status': row[7],
+        'created_at': row[8],
+        'updated_at': row[9]
+    }
+
+def acquire_insertion_lock(mac_address=None, ip_address=None):
+    """
+    Attempt to acquire an insertion lock and return a session id.
+
+    - If there's an existing awaiting_insertion OR inserting session for the same device (mac or ip),
+      transition it to 'inserting' and return that session id.
+    - If another device already holds the inserting lock, return None.
+    - Otherwise create a new session with status=STATUS_INSERTING and return its id.
+
+    Uses BEGIN IMMEDIATE to reduce race conditions across processes.
+    """
+    db = get_db()
+    now = int(datetime.now(timezone.utc).timestamp())
+    cur = db.cursor()
+
+    try:
+        # Acquire an immediate transaction lock to avoid races
+        db.execute("BEGIN IMMEDIATE")
+
+        # Discover available columns
+        cur.execute("PRAGMA table_info(sessions)")
+        cols_info = cur.fetchall()
+        if not cols_info:
+            db.rollback()
+            return None
+        available_cols = {r[1] for r in cols_info}
+
+        mac_cols = [c for c in ("mac_address", "mac", "client_mac") if c in available_cols]
+        ip_cols = [c for c in ("ip_address", "ip", "client_ip") if c in available_cols]
+
+        # 1) Check if THIS device already has an awaiting_insertion or inserting session
+        same_device_where = []
+        same_params = []
+        
+        if mac_address:
+            for c in mac_cols:
+                same_device_where.append(f"{c} = ?")
+                same_params.append(mac_address)
+        
+        if ip_address:
+            for c in ip_cols:
+                same_device_where.append(f"{c} = ?")
+                same_params.append(ip_address)
+
+        if same_device_where:
+            where_sql = "(status = ? OR status = ?) AND (" + " OR ".join(same_device_where) + ")"
+            params = [STATUS_AWAITING_INSERTION, STATUS_INSERTING] + same_params
+            cur.execute(f"SELECT id, status FROM sessions WHERE {where_sql} ORDER BY created_at DESC LIMIT 1", tuple(params))
+            row = cur.fetchone()
+            if row:
+                existing_id = row[0]
+                existing_status = row[1]
+                # Transition to inserting if it was awaiting_insertion
+                if existing_status == STATUS_AWAITING_INSERTION:
+                    cur.execute("UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?", 
+                              (STATUS_INSERTING, now, existing_id))
+                    current_app.logger.debug("Transitioned session %s from awaiting_insertion to inserting", existing_id)
+                db.commit()
+                return existing_id
+
+        # 2) If any OTHER device has an inserting session, lock is busy
+        cur.execute("SELECT id FROM sessions WHERE status = ? LIMIT 1", (STATUS_INSERTING,))
+        row = cur.fetchone()
+        if row:
+            db.commit()
+            return None
+
+        # 3) Create a new inserting session
+        insert_cols = []
+        insert_vals = []
+        if mac_cols and mac_address:
+            insert_cols.append(mac_cols[0])
+            insert_vals.append(mac_address)
+        if ip_cols and ip_address:
+            insert_cols.append(ip_cols[0])
+            insert_vals.append(ip_address)
+        if "status" in available_cols:
+            insert_cols.append("status")
+            insert_vals.append(STATUS_INSERTING)
+        if "created_at" in available_cols:
+            insert_cols.append("created_at")
+            insert_vals.append(now)
+        if "updated_at" in available_cols:
+            insert_cols.append("updated_at")
+            insert_vals.append(now)
+
+        if not insert_cols:
+            db.rollback()
+            return None
+
+        placeholders = ",".join(["?"] * len(insert_vals))
+        cols_sql = ",".join(insert_cols)
+        cur.execute(f"INSERT INTO sessions ({cols_sql}) VALUES ({placeholders})", tuple(insert_vals))
+        session_id = cur.lastrowid
+        db.commit()
+        return session_id
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        raise
+
+def expire_stale_awaiting_sessions(max_age_seconds=600):
+    """
+    Mark sessions with status=awaiting_insertion older than max_age_seconds as expired.
+    Returns number of sessions updated.
+    """
+    db = get_db()
+    now = int(datetime.now(timezone.utc).timestamp())
+    cutoff = now - int(max_age_seconds)
+    cur = db.cursor()
+    cur.execute(
+        """
+        UPDATE sessions
+        SET status = ?, updated_at = ?
+        WHERE status = ?
+          AND created_at IS NOT NULL
+          AND created_at < ?
+        """,
+        (STATUS_EXPIRED, now, STATUS_AWAITING_INSERTION, cutoff),
+    )
+    db.commit()
+    return cur.rowcount
+
+def expire_finished_active_sessions():
+    """
+    Mark active sessions whose time has fully elapsed as expired.
+    Uses session_end as the authoritative end time.
+    Returns number of sessions updated.
+    """
+    db = get_db()
+    now = int(datetime.now(timezone.utc).timestamp())
+    cur = db.cursor()
+    cur.execute(
+        """
+        UPDATE sessions
+        SET status = ?, updated_at = ?
+        WHERE status = ?
+          AND session_end IS NOT NULL
+          AND session_end <= ?
+        """,
+        (STATUS_EXPIRED, now, STATUS_ACTIVE, now),
+    )
+    db.commit()
+    return cur.rowcount
+
+def update_session(session_id, updates):
+    """Update session fields
+    
+    Args:
+        session_id: Session ID to update
+        updates: Dictionary of fields to update (e.g., {'bottles_inserted': 3, 'seconds_earned': 360})
+    
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    conn = get_db()
+    if not conn:
+        return False
+    
+    # Build UPDATE query dynamically
+    set_clauses = []
+    values = []
+    for key, value in updates.items():
+        set_clauses.append(f"{key} = ?")
+        values.append(value)
+    
+    if not set_clauses:
+        return False
+    
+    values.append(session_id)  # Add session_id for WHERE clause
+    
+    query = f"UPDATE sessions SET {', '.join(set_clauses)} WHERE id = ?"
+    
+    try:
+        conn.execute(query, values)
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Error updating session {session_id}: {e}")
+        return False
 
 
 
