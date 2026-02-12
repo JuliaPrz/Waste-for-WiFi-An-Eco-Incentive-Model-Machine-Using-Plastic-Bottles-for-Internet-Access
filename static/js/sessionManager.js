@@ -200,6 +200,10 @@ window.addEventListener('bottles-committed', async (ev) => {
 
     console.log('Committing', bottles, 'bottles for session', sessionId);
 
+    // Was this session already active (i.e., had a running timer) before opening the modal?
+    const wasAlreadyActive =
+      !!(pendingSessionData && pendingSessionData.session_start && pendingSessionData.session_end);
+
     // Compute delta vs what server already knows to avoid double-increment.
     const delta = Math.max(0, bottles - (serverBottleCount || 0));
     let res = null;
@@ -226,41 +230,52 @@ window.addEventListener('bottles-committed', async (ev) => {
       console.log('No delta to post - server already has the bottles');
     }
 
-    // Activate session on server (server will set status -> active and set start/end)
-    const actRes = await apiActivateSession(sessionId);
-    if (!actRes.ok) {
-      const body = await actRes.json().catch(() => ({}));
-      console.error('Failed to activate session', sessionId, actRes.status, body);
-      updateButtonStates({ status: 'awaiting_insertion' });
-      return;
-    }
-
-    const actBody = await actRes.json().catch(()=>null);
-    const sessionPayload = actBody && actBody.session ? actBody.session : null;
-    if (sessionPayload) {
-      pendingSessionData = {
-        id: sessionPayload.id,
-        status: sessionPayload.status,
-        bottles_inserted: sessionPayload.bottles_inserted || 0,
-        session_start: sessionPayload.session_start || null,
-        session_end: sessionPayload.session_end || null
-      };
-      // sync server-known count after successful commit/activate
-      serverBottleCount = pendingSessionData.bottles_inserted || serverBottleCount;
-      bottleCount = pendingSessionData.bottles_inserted || 0;
-      setCurrentSessionId(sessionPayload.id);
+    if (wasAlreadyActive) {
+      // 💡 Session was already running; don't re-activate (which would recompute/reset session_end).
+      // Just refresh from the server so the countdown (#timer) uses the updated session_end.
       try {
-        startSessionCountdown(pendingSessionData, async () => {
-          updateConnectionStatus(false);
-          updateButtonStates({ status: 'expired' });
-          setCurrentSessionId(null);
-        });
-      } catch (e) { console.warn('startSessionCountdown error', e); }
-      updateButtonStates(pendingSessionData);
-      updateConnectionStatus(true);
-      console.log('Session activated after commit:', pendingSessionData);
+        await lookupSession(); // existing helper; keeps server as single source of truth
+        updateConnectionStatus(true);
+      } catch (e) {
+        console.error('Failed to refresh session after committing bottles for active session', e);
+      }
     } else {
-      await lookupSession();
+      // Activate session on server (server will set status -> active and set start/end)
+      const actRes = await apiActivateSession(sessionId);
+      if (!actRes.ok) {
+        const body = await actRes.json().catch(() => ({}));
+        console.error('Failed to activate session', sessionId, actRes.status, body);
+        updateButtonStates({ status: 'awaiting_insertion' });
+        return;
+      }
+
+      const actBody = await actRes.json().catch(()=>null);
+      const sessionPayload = actBody && actBody.session ? actBody.session : null;
+      if (sessionPayload) {
+        pendingSessionData = {
+          id: sessionPayload.id,
+          status: sessionPayload.status,
+          bottles_inserted: sessionPayload.bottles_inserted || 0,
+          session_start: sessionPayload.session_start || null,
+          session_end: sessionPayload.session_end || null
+        };
+        // sync server-known count after successful commit/activate
+        serverBottleCount = pendingSessionData.bottles_inserted || serverBottleCount;
+        bottleCount = pendingSessionData.bottles_inserted || 0;
+        setCurrentSessionId(sessionPayload.id);
+        try {
+          startSessionCountdown(pendingSessionData, async () => {
+            updateConnectionStatus(false);
+            updateButtonStates({ status: 'expired' });
+            setCurrentSessionId(null);
+          });
+        } catch (e) { console.warn('startSessionCountdown error', e); }
+        updateButtonStates(pendingSessionData);
+        updateConnectionStatus(true);
+        console.log('Session activated after commit:', pendingSessionData);
+      } else {
+        await lookupSession();
+      }
     }
   } catch (err) {
     console.error('Error in bottles-committed handler', err);
