@@ -10,12 +10,14 @@ let initialY;
 let xOffset = 0;
 let yOffset = 0;
 
+import { bottleInserted, createSession, lookupSession, getCurrentSessionId } from './sessionManager.js';
+import { updateConnectionStatus } from './ui.js';
+
 export function initMockDevPanel() {
   const panel = document.getElementById('mock-dev-panel');
   const dragHandle = document.getElementById('mock-drag-handle');
   const toggleBtn = document.getElementById('mock-toggle-btn');
   const mockBody = document.getElementById('mock-body');
-  const createSessionBtn = document.getElementById('mock-create-session-btn');
   const bottleInsertBtn = document.getElementById('mock-bottle-insert-btn');
   const sessionInfo = document.getElementById('mock-session-info');
 
@@ -32,54 +34,18 @@ export function initMockDevPanel() {
     toggleBtn.textContent = mockBody.classList.contains('collapsed') ? '+' : '−';
   });
 
-  // Mock create session
-  createSessionBtn.addEventListener('click', async () => {
-    try {
-      const mac = `AA:BB:CC:DD:EE:${Math.random().toString(16).substr(2, 2).toUpperCase()}`;
-      const ip = `192.168.1.${Math.floor(Math.random() * 200 + 10)}`;
-      
-      const response = await fetch('/api/session/create', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mac_address: mac, ip_address: ip })
-      });
-
-      const data = await response.json();
-      
-      if (response.ok) {
-        sessionInfo.innerHTML = `✅ Session ID: ${data.session_id}<br>MAC: ${mac}<br>Status: ${data.status}`;
-        showToast('Session created successfully', 'success');
-        
-        // Store session ID globally for other mock actions
-        window.mockSessionId = data.session_id;
-        
-        // Store in localStorage so main UI can access it
-        localStorage.setItem('session_id', data.session_id);
-        localStorage.setItem('session_status', data.status);
-        
-        // Trigger session check to update main UI
-        window.dispatchEvent(new CustomEvent('session-created', { 
-          detail: { session_id: data.session_id, status: data.status } 
-        }));
-        
-        // Refresh UI
-        if (window.checkSession) window.checkSession();
-      } else {
-        sessionInfo.textContent = `❌ Error: ${data.error}`;
-        showToast('Failed to create session', 'error');
-      }
-    } catch (error) {
-      console.error('Mock create session error:', error);
-      sessionInfo.textContent = `❌ ${error.message}`;
-      showToast('Connection error', 'error');
-    }
-  });
-
   // Mock bottle insert
   bottleInsertBtn.addEventListener('click', async () => {
+    // If no session id yet, try to perform the portal lookup (session is assigned at page load)
     if (!window.mockSessionId) {
-      showToast('Create a session first', 'error');
-      return;
+      try {
+        // use the session manager lookup to ensure a session exists for this device
+        const sm = await import('./sessionManager.js');
+        await sm.lookupSession();
+      } catch (e) {
+        console.warn('lookupSession fallback failed', e);
+      }
+      // proceed — server will respond with error if still no session
     }
 
     try {
@@ -88,24 +54,54 @@ export function initMockDevPanel() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: window.mockSessionId })
       });
-
       const data = await response.json();
-      
       if (response.ok) {
         sessionInfo.innerHTML = `✅ Session ID: ${window.mockSessionId}<br>Bottles: ${data.bottles_inserted}<br>Time: ${data.minutes_earned} min`;
         showToast(`Bottle inserted! +${data.minutes_earned} min`, 'success');
-        
-        // Update UI counters if modal is open
-        const bottleCount = document.getElementById('bottle-count');
-        const timeEarned = document.getElementById('time-earned');
-        if (bottleCount) bottleCount.textContent = data.bottles_inserted;
-        if (timeEarned) timeEarned.textContent = `${data.minutes_earned} minutes`;
+        // Inform session manager about the insertion so it can enable Done and start session
+        try { bottleInserted(window.mockSessionId, data.bottles_inserted, data.minutes_earned); } catch (err) { console.error('bottleInserted error', err); }
       } else {
         showToast(data.error || 'Failed to insert bottle', 'error');
       }
     } catch (error) {
       console.error('Mock bottle insert error:', error);
       showToast('Connection error', 'error');
+    }
+  });
+
+  async function refreshSessionInfo() {
+    try {
+      const session = await lookupSession();
+      const sid = session?.id || getCurrentSessionId();
+      if (session) {
+        const now = Math.floor(Date.now() / 1000);
+        const status = session.status || 'awaiting_insertion';
+        const remaining = session.session_end ? Math.max(0, session.session_end - now) : 0;
+        sessionInfo.innerHTML = `Session ID: ${sid || 'N/A'}<br>Status: ${status}${status === 'active' ? ` (expires in ${Math.floor(remaining/60)}m ${remaining%60}s)` : ''}<br>Bottles: ${session.bottles_inserted || 0}`;
+      } else if (sid) {
+        sessionInfo.innerHTML = `Session ID: ${sid}<br>Status: unknown`;
+      } else {
+        sessionInfo.innerHTML = 'No Active session';
+      }
+    } catch (e) {
+      sessionInfo.innerHTML = 'No Active session';
+    }
+  }
+
+  // populate session info on panel init
+  refreshSessionInfo();
+
+  // update when sessionManager dispatches session-updated
+  window.addEventListener('session-updated', (ev) => {
+    try {
+      const s = ev.detail || {};
+      const sid = s.id || getCurrentSessionId();
+      const status = s.status || 'awaiting_insertion';
+      const now = Math.floor(Date.now() / 1000);
+      const remaining = s.session_end ? Math.max(0, s.session_end - now) : 0;
+      sessionInfo.innerHTML = `Session ID: ${sid || 'N/A'}<br>Status: ${status}${status === 'active' ? ` (expires in ${Math.floor(remaining/60)}m ${remaining%60}s)` : ''}<br>Bottles: ${s.bottles_inserted || 0}`;
+    } catch (e) {
+      // ignore
     }
   });
 
@@ -150,5 +146,53 @@ function showToast(message, type = 'info') {
     window.showToast(message, type);
   } else {
     console.log(`[TOAST ${type}]`, message);
+  }
+}
+
+export async function createMockSession(mac_address = null, ip_address = null) {
+  // Instead of creating a DB session immediately, attempt to acquire insertion lock.
+  const payload = {};
+  if (mac_address) payload.mac_address = mac_address;
+  if (ip_address) payload.ip_address = ip_address;
+
+  try {
+    console.log('createMockSession: requesting insertion lock...');
+    const res = await fetch('/api/session/lock', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    if (res.status === 409) {
+      const body = await res.json().catch(() => ({}));
+      const msg = body.message || body.error || 'Machine is currently busy';
+      showToast(msg, 'error', 8000);
+      console.warn('createMockSession: lock denied:', msg);
+      throw new Error(msg);
+    }
+    if (!res.ok) {
+      const body = await res.json().catch(()=>({}));
+      console.error('createMockSession: lock request failed', body);
+      throw new Error('Failed to acquire insertion lock');
+    }
+
+    const info = await res.json().catch(()=>({}));
+    // Do NOT create DB session yet; mark local pending state as "inserting"
+    pendingSessionData = {
+      id: null,
+      status: 'inserting',
+      bottles_inserted: 0,
+      session_start: null,
+      session_end: null,
+      owner: info.owner || window.location.hostname
+    };
+    // set currentSessionId still null (no session id yet)
+    setCurrentSessionId(null);
+    console.log('createMockSession: insertion lock acquired, local status = inserting', pendingSessionData);
+    updateButtonStates(pendingSessionData);
+    return { success: true, status: 'inserting' };
+  } catch (err) {
+    console.error('createMockSession error', err);
+    throw err;
   }
 }

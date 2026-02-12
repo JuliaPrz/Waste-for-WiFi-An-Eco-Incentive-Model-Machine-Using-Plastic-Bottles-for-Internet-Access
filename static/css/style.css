@@ -289,7 +289,7 @@ body {
   display: flex !important;
 }
 
-.modal-header {
+.modal-header, .flex-column {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -332,6 +332,43 @@ body {
   color: var(--primary);
   cursor: pointer;
   z-index: 2;
+}
+
+/* Modal top-right X */
+.modal-close-x {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  background: transparent;
+  border: none;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  color: #444;
+  padding: 4px;
+}
+
+/* Helper text styling */
+.helper-text {
+  margin-top: 8px;
+  color: #b33;
+  font-size: 13px;
+}
+
+/* Only-if-no-bottle helper/X visibility controlled by JavaScript by adding/removing .only-if-no-bottle class.
+   Keep visible by default; JS should remove the class when a bottle is inserted. */
+
+/* Disabled button styling (CSS-driven disable for consistent visuals & pointer-events) */
+button.disabled,
+button[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* Ensure modal layout accounts for the close X */
+.modal-card {
+  position: relative;
 }
 
 /* Progress bar */

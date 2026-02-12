@@ -136,39 +136,55 @@ def _create_tables(db):
 # SESSION HELPERS
 # ============================================================================
 
-def create_session(mac_address, ip_address=None):
-    """Create a new session in 'awaiting_insertion' status."""
+def create_session(mac_address, ip_address=None, status=DEFAULT_SESSION_STATUS):
+    """
+    Create a session row. Detects available session columns and inserts only them.
+    Returns integer session id.
+    """
     db = get_db()
     now = int(datetime.now(timezone.utc).timestamp())
-    
-    cursor = db.execute('''
-        INSERT INTO sessions (
-            mac_address, ip_address, bottles_inserted, seconds_earned,
-            status, created_at, updated_at
-        ) VALUES (?, ?, 0, 0, ?, ?, ?)
-    ''', (mac_address, ip_address, STATUS_AWAITING_INSERTION, now, now))
-    
+
+    cur = db.cursor()
+    # get actual columns for sessions table
+    cur.execute("PRAGMA table_info(sessions)")
+    cols_info = cur.fetchall()
+    if not cols_info:
+        raise RuntimeError("sessions table not found in database")
+
+    available_cols = {row[1] for row in cols_info}  # name is at index 1
+
+    # Map desirable fields -> candidate column names (in preference order)
+    candidates = {
+        "mac": [("mac", mac_address), ("mac_address", mac_address), ("client_mac", mac_address)],
+        "ip": [("ip", ip_address), ("ip_address", ip_address), ("client_ip", ip_address)],
+        "status": [("status", status)],
+        "created_at": [("created_at", now), ("created", now), ("created_ts", now)],
+        "updated_at": [("updated_at", now), ("updated", now), ("updated_ts", now)],
+    }
+
+    insert_cols = []
+    insert_vals = []
+    for logical, options in candidates.items():
+        for col_name, value in options:
+            if col_name in available_cols:
+                insert_cols.append(col_name)
+                insert_vals.append(value)
+                break
+
+    if not insert_cols:
+        raise RuntimeError("No known columns found to create a session row")
+
+    placeholders = ",".join(["?"] * len(insert_vals))
+    cols_sql = ",".join(insert_cols)
+    sql = f"INSERT INTO sessions ({cols_sql}) VALUES ({placeholders})"
+    cur.execute(sql, tuple(insert_vals))
     db.commit()
-    session_id = cursor.lastrowid
-    
-    log_system_event('session_started', f'Session {session_id} created for MAC {mac_address}')
-    
-    return session_id
+    return cur.lastrowid
 
 def get_session(session_id):
     """Get session by ID."""
     db = get_db()
     row = db.execute('SELECT * FROM sessions WHERE id = ?', (session_id,)).fetchone()
-    return dict(row) if row else None
-
-def get_session_by_mac(mac_address):
-    """Get active or inserting session by MAC address."""
-    db = get_db()
-    row = db.execute('''
-        SELECT * FROM sessions 
-        WHERE mac_address = ? AND status IN (?, ?, ?)
-        ORDER BY created_at DESC LIMIT 1
-    ''', (mac_address, STATUS_AWAITING_INSERTION, STATUS_INSERTING, STATUS_ACTIVE)).fetchone()
     return dict(row) if row else None
 
 def update_session_status(session_id, status):
@@ -249,15 +265,6 @@ def extend_session(session_id, additional_seconds):
     ''', (new_end, additional_seconds, now, session_id))
     
     db.commit()
-    return True
-
-def update_session_start(session_id):
-    """Compatibility wrapper for older import name -> starts the session."""
-    return start_session(session_id)
-
-def revoke_session(session_id):
-    """Compatibility wrapper to mark a session as disconnected."""
-    update_session_status(session_id, 'disconnected')
     return True
 
 # ============================================================================
@@ -378,6 +385,54 @@ def get_rating_stats():
         FROM ratings
     ''').fetchone()
     return dict(stats) if stats else {}
+
+def get_session_for_device(mac=None, ip=None, statuses=ALL_SESSION_STATUSES):
+    """
+    Return the most recent session for a device identified by MAC or IP
+    where session.status is one of `statuses`. Returns dict or None.
+    """
+    db = get_db()
+    cur = db.cursor()
+
+    # discover available columns in sessions table
+    cur.execute("PRAGMA table_info(sessions)")
+    cols_info = cur.fetchall()
+    if not cols_info:
+        return None
+    available_cols = [r[1] for r in cols_info]
+
+    # candidate names for mac/ip columns
+    mac_candidates = [c for c in ("mac", "mac_address", "client_mac") if c in available_cols]
+    ip_candidates = [c for c in ("ip", "ip_address", "client_ip") if c in available_cols]
+    if "status" not in available_cols:
+        return None
+
+    where_clauses = []
+    params = []
+
+    if mac and mac_candidates:
+        mac_clause = "(" + " OR ".join(f"{col} = ?" for col in mac_candidates) + ")"
+        where_clauses.append(mac_clause)
+        params.extend([mac] * len(mac_candidates))
+
+    if ip and ip_candidates:
+        ip_clause = "(" + " OR ".join(f"{col} = ?" for col in ip_candidates) + ")"
+        where_clauses.append(ip_clause)
+        params.extend([ip] * len(ip_candidates))
+
+    # status IN (...)
+    status_placeholders = ",".join(["?"] * len(statuses))
+    where_clauses.append(f"status IN ({status_placeholders})")
+    params.extend(statuses)
+
+    where_sql = " AND ".join(where_clauses)
+    sql = f"SELECT * FROM sessions WHERE {where_sql} ORDER BY id DESC LIMIT 1"
+    cur.execute(sql, tuple(params))
+    row = cur.fetchone()
+    if not row:
+        return None
+    cols = [c[0] for c in cur.description]
+    return dict(zip(cols, row))
 
 
 

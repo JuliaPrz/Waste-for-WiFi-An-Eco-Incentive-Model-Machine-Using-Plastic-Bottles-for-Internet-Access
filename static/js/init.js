@@ -3,114 +3,137 @@ import { startBottleTimer, stopBottleTimer, registerBottle } from './timer.js';
 import { initMockDevPanel } from './mockDevPanel.js';
 import {
   getCurrentSessionId,
-  setCurrentSessionId,
+  createSession,
   activateSession,
-  updateButtonStates,
-  fetchAndUpdateSession
+  startSessionTimer,
+  cancelInsertion,
+  lookupSession
 } from './sessionManager.js';
+import { updateButtonStates } from './ui.js';
 
 function attachGuardedButton(buttonId, onAllowed) {
   const btn = document.getElementById(buttonId);
   if (!btn) return;
-  
-  const checkAndExecute = (e) => {
+  btn.addEventListener('click', (e) => {
     const sessionId = getCurrentSessionId();
     if (!sessionId) {
       e.preventDefault();
-      e.stopImmediatePropagation?.();
       e.stopPropagation();
+      console.log(`Action blocked: no session for button ${buttonId}`);
       return;
     }
     if (typeof onAllowed === 'function') onAllowed(e);
-  };
-  
-  btn.addEventListener('click', checkAndExecute, { capture: true });
+  }, { capture: true });
 }
 
-// Event: Session created via dev panel
-window.addEventListener('session-created', (e) => {
-  const id = e?.detail?.session_id;
-  if (!id) return;
-  setCurrentSessionId(id);
-  updateButtonStates({ status: 'awaiting_insertion' });
-  fetchAndUpdateSession(id);
-});
+document.addEventListener('DOMContentLoaded', async () => {
+  try {
+    console.log('DOMContentLoaded handler running');
 
-// Event: Bottle registered (immediate feedback)
-window.addEventListener('bottle-registered', (e) => {
-  const d = e?.detail ?? {};
-  const session_id = d.session_id ?? getCurrentSessionId();
-  const bottles = Number(d.bottles ?? 0);
-  const seconds = Number(d.seconds ?? 0);
-  
-  if (!session_id) {
-    console.warn('bottle-registered: no session_id');
-    return;
-  }
-  
-  activateSession(session_id, bottles, seconds);
-});
+    // Lookup or create session for this device when portal opens
+    const session = await lookupSession();
+    let currentSessionStatus = session?.status || (session && session.session && session.session.status) || 'awaiting_insertion';
+    console.log('Session lookup result:', session, 'status:', currentSessionStatus);
 
-// Event: Bottles committed (final count)
-window.addEventListener('bottles-committed', (e) => {
-  const d = e?.detail ?? {};
-  const session_id = d.session_id ?? getCurrentSessionId();
-  const bottles = Number(d.bottles ?? 0);
-  const seconds = Number(d.seconds ?? 0);
-
-  if (!session_id) {
-    console.warn('bottles-committed: no session_id');
-    return;
-  }
-
-  activateSession(session_id, bottles, seconds);
-});
-
-// Initialize app
-document.addEventListener('DOMContentLoaded', () => {
-  const currentSessionId = getCurrentSessionId();
-  
-  // Set initial button states
-  updateButtonStates(currentSessionId ? { status: 'awaiting_insertion' } : null);
-
-  // Attach guarded buttons
-  attachGuardedButton('btn-insert-bottle', () => {
+    // Initialize UI state
     const sessionId = getCurrentSessionId();
-    if (!sessionId) return;
-    openModal('modal-insert-bottle');
-    startBottleTimer(sessionId);
-  });
+    updateButtonStates(sessionId ? { status: currentSessionStatus, session_id: sessionId } : null);
 
-  attachGuardedButton('btn-rate', () => {
-    openModal('modal-rate');
-  });
+    // Insert Bottle button: create session if none, then open modal & start timer
+    const insertBtn = $('btn-insert-bottle');
+    if (insertBtn) {
+      insertBtn.addEventListener('click', async (e) => {
+        e.preventDefault();
+        console.log('Insert Bottle clicked — current status:', currentSessionStatus);
 
-  // Modal close handlers
-  const doneBtn = document.querySelector('.modal-close');
-  if (doneBtn) {
-    doneBtn.addEventListener('click', () => stopBottleTimer());
-  }
+        let sid = getCurrentSessionId();
 
-  document.querySelectorAll('.modal-close').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      const modal = e.target.closest('.modal');
-      if (modal) closeModal(modal.id);
-    });
-  });
+        // Attempt to acquire server-side insertion lock (creates/claims session with status='inserting')
+        // If the session is already 'inserting' or 'active' we skip acquisition.
+        if (currentSessionStatus !== 'inserting' && currentSessionStatus !== 'active') {
+          try {
+            const res = await createSession();
+            // createSession throws on failure; on success it returns { success: true, status: 'inserting', session: {...} }
+            sid = res?.session?.id || getCurrentSessionId() || sid;
+            currentSessionStatus = res?.status || res?.session?.status || 'inserting';
+            console.log('Insertion lock acquired — session:', sid, 'status:', currentSessionStatus, res);
+          } catch (err) {
+            // createSession already shows toast on 409; do not open modal
+            console.warn('Could not acquire insertion lock, aborting modal open', err);
+            return;
+          }
+        } else {
+          console.log('Using existing session id:', sid, 'status:', currentSessionStatus);
+        }
 
-  // Mock bottle button (dev/testing)
-  const mockBottleBtn = $('mock-bottle-btn');
-  if (mockBottleBtn) {
-    mockBottleBtn.addEventListener('click', () => registerBottle());
-  }
+        // Only open modal after lock acquired
+        // Populate modal with current session bottle/time data from server, then open modal & start timer
+        try {
+          if (sid) {
+            const resp = await fetch(`/api/session/${encodeURIComponent(sid)}`);
+            if (resp.ok) {
+              const srv = await resp.json().catch(()=>null);
+              const bottles = Number(srv?.bottles_inserted ?? srv?.bottles ?? 0);
+              const seconds = Number(srv?.seconds_earned ?? 0);
+              const bottleCountEl = document.getElementById('bottle-count');
+              const timeEarnedEl = document.getElementById('time-earned');
+              if (bottleCountEl) bottleCountEl.textContent = String(bottles);
+              if (timeEarnedEl) timeEarnedEl.textContent = `${Math.floor(seconds/60)} minutes`;
+            }
+          }
+        } catch (e) {
+          console.warn('Failed to load session bottle/time data', e);
+        }
 
-  // How it works button
-  const howBtn = $('btn-howitworks');
-  if (howBtn) {
-    howBtn.addEventListener('click', () => openModal('modal-howitworks'));
-  }
+        openModal('modal-insert-bottle');
+        console.log('Opened insert-bottle modal for session:', sid, 'status:', currentSessionStatus);
+        try { startBottleTimer(sid); } catch (e) { console.warn('startBottleTimer error', e); }
+      });
+    } else {
+      console.warn('Insert button not found in DOM');
+    }
 
-  initMockDevPanel();
+    // Rate button: navigate to rate page with session id
+    const rateBtn = $('btn-rate');
+    if (rateBtn) {
+      rateBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        const sid = getCurrentSessionId() || (pendingSessionData && pendingSessionData.id) || new URL(window.location.href).searchParams.get('session') || new URL(window.location.href).searchParams.get('session_id');
+        if (!sid) {
+          console.warn('Rate clicked but no session id available');
+          return;
+        }
+        window.location.href = `/rate.html?session_id=${encodeURIComponent(sid)}`;
+      });
+    }
+
+    // Rate button: require session
+    attachGuardedButton('btn-rate', () => openModal('modal-rate'));
+
+    const mockBottleBtn = $('mock-bottle-btn');
+    if (mockBottleBtn) {
+      mockBottleBtn.addEventListener('click', () => {
+        console.log('Mock bottle button clicked');
+        registerBottle();
+      });
+    }
+
+    const howBtn = $('btn-howitworks');
+    if (howBtn) howBtn.addEventListener('click', () => openModal('modal-howitworks'));
+
+    initMockDevPanel();
+
+    // Ensure the top-right X closes the modal and reverts insertion (uses imported cancelInsertion)
+    const modalCloseX = document.getElementById('modal-close-x');
+    if (modalCloseX) {
+      modalCloseX.addEventListener('click', async (e) => {
+        e.preventDefault();
+        console.log('Modal X clicked — cancelling insertion and closing modal');
+        try { await cancelInsertion(); } catch (err) { console.error('cancelInsertion error', err); }
+        closeModal('modal-insert-bottle');
+      });
+    }
+   } catch (err) {
+     console.error('Error in DOMContentLoaded handler:', err);
+   }
 });
-
-export { fetchAndUpdateSession };

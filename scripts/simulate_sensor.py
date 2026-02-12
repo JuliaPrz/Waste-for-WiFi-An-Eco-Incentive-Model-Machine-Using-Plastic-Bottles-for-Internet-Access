@@ -6,7 +6,7 @@ import requests
 import time
 import sys
 
-def simulate_bottles(session_id, num_bottles=3, delay=2):
+def simulate_bottle(session_id, num_bottles=3, delay=2):
     """Simulate bottle insertions."""
     print(f"\n=== Simulating {num_bottles} bottle insertions ===\n")
     
@@ -38,4 +38,4 @@ if __name__ == '__main__':
     num_bottles = int(sys.argv[2]) if len(sys.argv) > 2 else 3
     delay = float(sys.argv[3]) if len(sys.argv) > 3 else 2
     
-    simulate_bottles(session_id, num_bottles, delay)
+    simulate_bottle(session_id, num_bottles, delay)

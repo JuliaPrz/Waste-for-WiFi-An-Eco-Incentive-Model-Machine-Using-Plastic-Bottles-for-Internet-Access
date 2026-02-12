@@ -53,6 +53,41 @@ def session_status(session_id):
         return jsonify({"error": "internal_server_error"}), 500
 
 
+@bp.route("/api/session/lookup", methods=("GET", "POST"))
+def api_session_lookup():
+    """
+    Called by captive portal client when opening the portal.
+    Returns existing session for this device if any of statuses
+    (awaiting_insertion, inserting, active) exist, otherwise creates
+    a new session with status = awaiting_insertion and returns it.
+    """
+    client_ip = request.remote_addr or request.headers.get("X-Forwarded-For")
+    mac = None
+    try:
+        mac = get_mac_for_ip(client_ip)
+    except Exception:
+        mac = None
+
+    # allow client to pass a mac param (for dev/testing)
+    if request.is_json:
+        body = request.get_json()
+        mac = body.get("mac") or mac
+
+    # check for existing session for this device
+    existing = db.get_session_for_device(mac=mac, ip=client_ip, statuses=(
+        "awaiting_insertion", "inserting", "active"
+    ))
+    if existing:
+        current_app.logger.debug("Session lookup: returning existing session for %s/%s -> %s", mac, client_ip, existing.get("id"))
+        return jsonify({"found": True, "session": existing}), 200
+
+    # no existing session -> create awaiting_insertion
+    session_id = db.create_session(mac, client_ip, status="awaiting_insertion")
+    session = db.get_session(session_id)
+    current_app.logger.debug("Session lookup: created new awaiting_insertion session %s for %s/%s", session_id, mac, client_ip)
+    return jsonify({"found": False, "session": session}), 201
+
+
 def _get_mac_for_ip(ip):
     """Try to find the MAC address for `ip` using common system methods.
 

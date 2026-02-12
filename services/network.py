@@ -17,7 +17,6 @@ def _read_dnsmasq_leases(paths=None):
             try:
                 with open(p, "r") as fh:
                     for line in fh:
-                        # dnsmasq lease format: <expiry> <mac> <ip> <hostname> <client-id>
                         parts = line.strip().split()
                         if len(parts) >= 3:
                             yield {"expiry": parts[0], "mac": parts[1], "ip": parts[2], "host": parts[3] if len(parts) > 3 else None}
@@ -54,21 +53,56 @@ def get_mac_from_arp_cmd(ip: str) -> Optional[str]:
     for cmd in (["arp", "-n", ip], ["arp", "-a", ip]):
         try:
             out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, universal_newlines=True)
-            if ip in out:
-                m = re.search(r"([0-9a-fA-F]{2}(?:[:\-][0-9a-fA-F]{2}){5})", out)
-                if m:
-                    return m.group(1)
+            m = re.search(r"([0-9a-fA-F]{2}(?:[:\-][0-9a-fA-F]{2}){5})", out)
+            if m:
+                return m.group(1)
         except Exception:
             continue
     return None
 
 
 def get_mac_for_ip(ip: str) -> Optional[str]:
-    # Try dnsmasq leases first (most reliable on Pi), then /proc/net/arp, then arp command
-    mac = get_mac_from_dnsmasq(ip)
-    if mac:
-        return mac
-    mac = get_mac_from_proc_arp(ip)
-    if mac:
-        return mac
-    return get_mac_from_arp_cmd(ip)
+    """
+    Resolve a client MAC for a given IPv4 address.
+    Attempts, in order:
+      - dnsmasq leases (if Pi uses dnsmasq)
+      - /proc/net/arp (Linux ARP table)
+      - arp command output (fallback)
+    Returns MAC string like 'aa:bb:cc:dd:ee:ff' or None.
+    """
+    # 1) dnsmasq leases
+    try:
+        for rec in _read_dnsmasq_leases():
+            if rec.get("ip") == ip:
+                mac = rec.get("mac")
+                if mac and mac != "00:00:00:00:00:00":
+                    return mac.lower()
+    except Exception:
+        pass
+
+    # 2) /proc/net/arp
+    try:
+        p = "/proc/net/arp"
+        if os.path.exists(p):
+            with open(p, "r") as fh:
+                lines = fh.read().strip().splitlines()
+                for line in lines[1:]:
+                    parts = line.split()
+                    if parts and parts[0] == ip:
+                        mac = parts[3]
+                        if mac and mac != "00:00:00:00:00:00":
+                            return mac.lower()
+    except Exception:
+        pass
+
+    # 3) arp command fallback
+    for cmd in (["arp", "-n", ip], ["arp", "-a", ip]):
+        try:
+            out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, universal_newlines=True)
+            m = re.search(r"([0-9a-fA-F]{2}(?:[:\-][0-9a-fA-F]{2}){5})", out)
+            if m:
+                return m.group(1).lower()
+        except Exception:
+            continue
+
+    return None

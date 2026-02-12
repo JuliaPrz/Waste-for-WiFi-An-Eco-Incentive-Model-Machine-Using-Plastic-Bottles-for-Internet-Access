@@ -1,6 +1,7 @@
 <div id="modal-insert-bottle" class="modal">
   <div class="modal-card">
-    
+    <!-- X close shown only when no bottle inserted -->
+    <button id="modal-close-x" class="modal-close-x only-if-no-bottle" aria-label="Close">✕</button>
     <div class="modal-header">
       <div class="title">Insert Plastic Bottle</div>
       <p class="info-text">Your Wi-Fi session will start automatically when the timer ends.</p>
@@ -30,6 +31,12 @@
       </div>
     </div>
 
-    <button class="btn done-btn modal-close">Done</button>
+    <div class="flex-column">
+      <!-- helper (shows until at least 1 bottle inserted) -->
+    <p id="insert-helper" class="helper-text only-if-no-bottle">You must insert at least 1 bottle to continue.</p>
+
+    <!-- Disabled until at least 1 bottle inserted (visual + pointer-events controlled by CSS) -->
+    <button id="btn-done-insert" class="btn done-btn modal-close disabled" disabled>Done</button>
+    </div>
   </div>
 </div>
