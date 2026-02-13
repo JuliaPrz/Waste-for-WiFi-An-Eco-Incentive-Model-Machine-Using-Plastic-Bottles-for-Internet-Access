@@ -56,28 +56,9 @@ def get_device_identifier(request_obj):
     return f"device:{new_device_id}", True, True
 
 
-@bp.route("/register", methods=("GET", "POST"))
-def register():
-    # auto-detect IP
-    ip = request.remote_addr
-    mac = request.values.get("mac")
-    # If caller didn't supply mac (useful for dev), try to resolve it via dnsmasq/ARP
-    if not mac:
-        try:
-            mac = get_mac_for_ip(ip)
-        except Exception:
-            mac = None
-    session_manager = current_app.extensions["session_manager"]
-    session_id = session_manager.create(ip, mac)
-    # If request is AJAX/JSON prefer returning JSON so frontend can remain single-page
-    if request.is_json or request.headers.get("X-Requested-With") == "XMLHttpRequest":
-        return jsonify({"session_id": session_id})
-    return redirect(url_for("portal.waiting", session_id=session_id))
-
-
 @bp.route("/waiting/<session_id>")
 def waiting(session_id):
-    # waiting page will poll for changes and provide mock trigger when enabled
+    # Legacy waiting page kept for backwards compatibility; current flow uses SPA on index.html
     return render_template("waiting.html", session_id=session_id, mock=current_app.config.get("MOCK_SENSOR", False))
 
 
@@ -209,11 +190,12 @@ def _get_mac_for_ip(ip):
 
 @bp.route("/sensor/hit", methods=("POST",))
 def sensor_hit():
-    data = request.get_json(silent=True) or request.form or {}
-    session_id = data.get("session_id")
-    session_manager = current_app.extensions["session_manager"]
-    ok = session_manager.handle_bottle(session_id=session_id)
-    return jsonify({"ok": bool(ok)})
+    """Legacy endpoint for old SessionManager-based flow.
+
+    Kept as a no-op responder so that any old integrations don't crash, but
+    bottle handling is now driven via /api/bottle instead.
+    """
+    return jsonify({"ok": False, "message": "sensor/hit is deprecated; use /api/bottle"})
 @bp.route("/api/dev/clear-device", methods=["POST"])
 def clear_device_id():
     """DEV ONLY: Clear device_id cookie to simulate new user."""

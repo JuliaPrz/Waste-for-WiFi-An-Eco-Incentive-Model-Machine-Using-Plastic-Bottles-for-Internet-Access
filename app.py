@@ -120,15 +120,11 @@ def create_app(test_config=None):
                 except Exception as e:
                     application.logger.exception("Session cleanup error: %s", e)
                 time.sleep(application.config.get("CLEANUP_INTERVAL", 60))
-
     t = threading.Thread(target=_cleanup_loop, args=(app,), daemon=True)
     t.start()
-
     # Blueprints (keep routing organized in routes/)
     from routes.portal import bp as portal_bp
-    from routes.rating import bp as rating_bp
     app.register_blueprint(portal_bp)
-    app.register_blueprint(rating_bp)
 
     @app.route("/")
     def index():
