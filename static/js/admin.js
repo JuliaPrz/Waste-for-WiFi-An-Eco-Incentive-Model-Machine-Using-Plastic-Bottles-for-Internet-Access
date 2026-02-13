@@ -141,12 +141,19 @@ function renderOngoingPage() {
   } else {
     pageRows.forEach((row) => {
       const tr = document.createElement('tr');
-      tr.innerHTML = `
-        <td>${row.id || '-'}</td>
-        <td>${row.status || '-'}</td>
-        <td>${row.bottles_inserted || 0}</td>
-        <td>${formatTsRelative(row.session_end)}</td>
-      `;
+      const cells = [
+        { label: 'Session ID', value: row.id || '-' },
+        { label: 'Status', value: row.status || '-' },
+        { label: 'Bottles', value: row.bottles_inserted || 0 },
+        { label: 'Expires In', value: formatTsRelative(row.session_end) },
+      ];
+
+      cells.forEach((cell) => {
+        const td = document.createElement('td');
+        td.dataset.label = cell.label;
+        td.textContent = cell.value;
+        tr.appendChild(td);
+      });
       tbody.appendChild(tr);
     });
   }
@@ -246,13 +253,28 @@ function renderRatingsPage() {
     const avg = (scores.reduce((a, b) => a + b, 0) / 10).toFixed(2);
 
     const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td>${r.submitted_at ? formatTs(r.submitted_at) : '-'}</td>
-      <td>${r.session_id}</td>
-      ${scores.map((v) => `<td>${v || '-'}</td>`).join('')}
-      <td>${avg}</td>
-      <td>${(r.comment || '').substring(0, 240)}</td>
-    `;
+    const labels = [
+      'Submitted',
+      'Session ID',
+      ...Array.from({ length: 10 }, (_, i) => `Q${i + 1}`),
+      'Avg',
+      'Comment',
+    ];
+    const values = [
+      r.submitted_at ? formatTs(r.submitted_at) : '-',
+      r.session_id,
+      ...scores.map((v) => v || '-'),
+      avg,
+      (r.comment || '').substring(0, 240),
+    ];
+
+    values.forEach((value, idx) => {
+      const td = document.createElement('td');
+      td.dataset.label = labels[idx];
+      td.textContent = value;
+      tr.appendChild(td);
+    });
+
     tbody.appendChild(tr);
   });
 

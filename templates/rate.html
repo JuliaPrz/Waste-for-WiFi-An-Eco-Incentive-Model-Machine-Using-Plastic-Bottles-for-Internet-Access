@@ -308,7 +308,8 @@
 
           <section class="question">
             <label>Comments (optional)</label>
-            <textarea id="rating-comment" name="comment" rows="4"></textarea>
+            <textarea id="rating-comment" name="comment" rows="4" maxlength="250" aria-describedby="rating-comment-counter"></textarea>
+            <div class="char-counter" aria-live="polite"><span id="rating-comment-counter">0</span>/250</div>
           </section>
 
           <div class="form-actions">

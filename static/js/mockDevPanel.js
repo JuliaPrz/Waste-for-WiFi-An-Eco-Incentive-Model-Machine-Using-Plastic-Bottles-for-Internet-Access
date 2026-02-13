@@ -116,29 +116,31 @@ export function initMockDevPanel() {
   if (startSessionBtn) {
     startSessionBtn.addEventListener('click', async () => {
       try {
-        // Clear device_id cookie to simulate completely new user
-        try {
-          await fetch('/api/dev/clear-device', { method: 'POST' });
-          document.cookie = 'device_id=; Max-Age=0; path=/';
-        } catch (e) { console.warn('Failed to clear device_id', e); }
-
-        // Best-effort stop/disconnect any current session
+        // Best-effort: release any insertion lock for the current session/device
+        // Prefer unlocking over expiring so we don't erase earned time unexpectedly.
         const sid = window.mockSessionId || (typeof getCurrentSessionId === 'function' ? getCurrentSessionId() : null);
-        if (sid) {
-          try {
-            await fetch(`/api/session/${sid}/status`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ session_id: sid, status: 'expired' })
-            });
-          } catch (e) { /* ignore */ }
+        try {
+          // Try unlocking by session context (server usually resolves device via cookie/IP)
+          await fetch('/api/session/unlock', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(sid ? { session_id: sid } : {})
+          });
+        } catch (e) {
+          console.warn('Failed to call /api/session/unlock (non-fatal)', e);
         }
 
-        // Clear local storage
+        // Now clear device_id cookie to simulate a completely new user
+        try {
+          await fetch('/api/dev/clear-device', { method: 'POST' });
+        } catch (e) { console.warn('Failed to clear device_id (dev endpoint)', e); }
+        document.cookie = 'device_id=; Max-Age=0; path=/';
+
+        // Clear local storage and local mock session pointer
         localStorage.removeItem('session_id');
         window.mockSessionId = null;
 
-        // ✅ Lookup/create a fresh session in awaiting_insertion state
+        // Lookup/create a fresh session in awaiting_insertion state
         await lookupSession();
 
         showToast('Started new session as new user', 'success');

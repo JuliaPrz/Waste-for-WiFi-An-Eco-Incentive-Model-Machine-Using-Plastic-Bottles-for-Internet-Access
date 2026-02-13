@@ -179,6 +179,17 @@ input[type="radio"]:checked + .likert-option {
   font-size: 1rem;
 }
 
+/* Character counter under the comment box */
+.rating-main .char-counter {
+  text-align: right;
+  font-size: 0.875rem;
+  color: var(--muted);
+  margin-top: 6px;
+}
+.rating-main .char-counter .near-limit {
+  color: #d9534f; /* red when at/over limit */
+}
+
 /* Hide scrollbar but keep scrolling on body (not containers) */
 body::-webkit-scrollbar {
   display: none;

@@ -23,8 +23,9 @@
 }
 
 .brand-logo.small {
-  max-width: 7rem;
-  width: 7rem;
+  max-width: 8.5rem;
+  width: 8.5rem;
+  margin-bottom: 0;
 }
 
 .admin-title-group h1 {
@@ -140,6 +141,7 @@
 .panel-filter select {
   margin-top: 0.2rem;
   padding: 0.35rem 0.45rem;
+  padding-right: 0.9rem; /* extra right padding so native chevron isn't flush */
   border-radius: 0.45rem;
   border: 1px solid rgba(11, 40, 64, 0.18);
   background: #ffffff;
@@ -201,7 +203,22 @@
 }
 
 .admin-table tbody td {
-  padding-top: 0.75rem; /* Add space between header and body */
+  padding: 0.75rem;
+}
+
+/* Ensure table cells wrap and have a reasonable max width */
+.admin-table th,
+.admin-table td {
+  max-width: 18rem;
+  white-space: normal; /* allow wrapping */
+  overflow-wrap: break-word;
+  word-break: break-word;
+  hyphens: auto;
+}
+
+/* Add top padding to table headers for visual spacing */
+.admin-table th {
+  padding-top: 0.75rem;
 }
 
 /* responsive wrapper for tables */
@@ -231,26 +248,19 @@
 .admin-table--ratings th:nth-child(9),
 .admin-table--ratings th:nth-child(10),
 .admin-table--ratings th:nth-child(11),
-.admin-table--ratings th:nth-child(12),
-.admin-table--ratings th:nth-child(13),
-.admin-table--ratings td:nth-child(3),
-.admin-table--ratings td:nth-child(4),
-.admin-table--ratings td:nth-child(5),
-.admin-table--ratings td:nth-child(6),
-.admin-table--ratings td:nth-child(7),
-.admin-table--ratings td:nth-child(8),
-.admin-table--ratings td:nth-child(9),
-.admin-table--ratings td:nth-child(10),
-.admin-table--ratings td:nth-child(11),
-.admin-table--ratings td:nth-child(12),
-.admin-table--ratings td:nth-child(13) {
-  width: 3.1rem;
+.admin-table--ratings th:nth-child(12){
+  width: 3.3rem;
+  text-align: center;
+}
+
+.admin-table--ratings th:nth-child(13){
+  width: 8rem;
   text-align: center;
 }
 
 .admin-table--ratings th:nth-child(14),
 .admin-table--ratings td:nth-child(14) {
-  width: 40%;
+  width: 32%;
 }
 
 /* Center all td in User Reviews table */
@@ -357,12 +367,177 @@
     justify-content: flex-start;
   }
 
+  /* Make Ongoing Sessions status select span full width on mobile */
+  .panel-ongoing .panel-filter,
+  .panel-ongoing .panel-filter label,
+  .panel-ongoing .panel-filter select {
+    width: 100%;
+  }
+
+  /* Replace native arrow with a custom SVG chevron and give extra right padding */
+  .panel-ongoing .panel-filter select {
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'><path d='M0 0l5 6 5-6' fill='none' stroke='%230b2840' stroke-width='1.2' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+    background-repeat: no-repeat;
+    background-position: right 0.6rem center;
+    background-size: 0.5rem;
+    padding-right: 3rem; /* ensure space for the custom chevron */
+  }
+
+  /* Tighter layout and typography on small screens */
+  .admin-root {
+    padding: 1.1rem 0.75rem 0.75rem;
+  }
+
+  .admin-main {
+    gap: 1rem;
+  }
+
+  .admin-card {
+    padding: 1rem 0.9rem;
+  }
+
+  /* Stack KPI cards in a single column on phones */
+  .admin-kpis {
+    grid-template-columns: 1fr;
+  }
+
+  .kpi-value {
+    font-size: 1.6rem;
+  }
+
   .admin-table {
     font-size: 0.9rem; /* Slightly smaller on mobile */
   }
 
   .admin-table--ratings {
     font-size: 0.8rem;
+  }
+
+  /* Slightly reduce padding inside ratings table cells on mobile */
+  .admin-table--ratings th,
+  .admin-table--ratings td {
+    padding: 0.55rem 0.4rem;
+  }
+
+  /* On mobile card layout, ignore desktop column widths so all rows span full card width */
+  .admin-table--ratings th,
+  .admin-table--ratings td {
+    width: auto !important;
+  }
+
+  /* Turn admin tables into stacked cards on small screens */
+  .admin-table,
+  .admin-table thead,
+  .admin-table tbody,
+  .admin-table th,
+  .admin-table td,
+  .admin-table tr {
+    display: block;
+  }
+
+  /* Hide table header row but keep it for accessibility */
+  .admin-table thead {
+    position: absolute;
+    left: -9999px;
+    top: -9999px;
+    height: 0;
+    width: 0;
+    overflow: hidden;
+  }
+
+  /* Each table row becomes a card */
+  .admin-table tbody tr {
+    margin-bottom: 0.9rem;
+    border-radius: 0.75rem;
+    border: 1px solid rgba(11, 40, 64, 0.12);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+    background: #ffffff;
+    padding: 0.55rem 0.75rem;
+  }
+
+  /* Layout label/value pairs inside each row */
+  .admin-table tbody td {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 0.75rem;
+    padding: 0.3rem 0;
+    text-align: left; /* override centered text on mobile */
+  }
+
+  .admin-table tbody td::before {
+    content: attr(data-label);
+    font-weight: 600;
+    color: #4a5c7a;
+    flex: 0 0 45%;
+    max-width: 8rem;
+  }
+
+  .admin-table tbody td:last-child {
+    border-bottom: none;
+  }
+
+  /* Make the Comment row in User Reviews span full width for better readability */
+  .admin-table--ratings tbody td[data-label="Comment"] {
+    flex-direction: column;
+    align-items: flex-start;
+    padding-top: 0.4rem;
+    padding-bottom: 0.4rem;
+  }
+
+  .admin-table--ratings tbody td[data-label="Comment"]::before {
+    flex-basis: 100%;
+    max-width: none;
+    margin-bottom: 0.2rem;
+  }
+
+  /* Empty-state rows span full width without label prefix */
+  .admin-table tbody td[colspan] {
+    display: block;
+    text-align: center;
+    padding: 0.6rem 0.4rem;
+  }
+
+  .admin-table tbody td[colspan]::before {
+    content: '';
+  }
+}
+
+/* Extra-small phones: 480px and below */
+@media (max-width: 480px) {
+  .admin-root {
+    padding: 0.9rem 0.6rem 0.6rem;
+  }
+
+  .admin-card {
+    padding: 0.85rem 0.75rem;
+  }
+
+  .admin-title-group h1 {
+    font-size: 1.5rem;
+  }
+
+  .panel-header h2 {
+    font-size: 1.1rem;
+  }
+
+  .panel-subtitle {
+    font-size: 0.8rem;
+  }
+
+  .kpi-value {
+    font-size: 1.4rem;
+  }
+
+  .admin-table {
+    font-size: 0.85rem;
+  }
+
+  .admin-table--ratings {
+    font-size: 0.75rem;
   }
 }
 
@@ -374,6 +549,14 @@
   justify-content: center;
   gap: 1rem;
   padding: 1.5rem;
+}
+
+/* Center the main-card container vertically and horizontally */
+.main-card {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 60vh; /* ensures vertical centering space */
 }
 
 /* Login form container: constrained width, centered fields */

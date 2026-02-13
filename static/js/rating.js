@@ -29,6 +29,22 @@ document.addEventListener('DOMContentLoaded', () => {
   const form = document.getElementById('rating-form');
   if (!form) return;
 
+  // Live character counter for comment textarea
+  const commentEl = document.getElementById('rating-comment');
+  const counterEl = document.getElementById('rating-comment-counter');
+  if (commentEl && counterEl) {
+    const maxLen = Number(commentEl.getAttribute('maxlength') || 250);
+    const updateCounter = () => {
+      const len = commentEl.value.length;
+      counterEl.textContent = String(len);
+      if (len >= maxLen) counterEl.classList.add('near-limit');
+      else counterEl.classList.remove('near-limit');
+    };
+    commentEl.addEventListener('input', updateCounter);
+    // initialize
+    updateCounter();
+  }
+
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
 
