@@ -1,4 +1,4 @@
-from flask import Flask, make_response, send_from_directory, render_template, request, jsonify
+from flask import Flask, current_app, make_response, redirect, send_from_directory, render_template, request, jsonify, url_for
 from pathlib import Path
 from datetime import datetime, timezone
 import db
@@ -284,6 +284,134 @@ def create_app(test_config=None):
 
         # Redirect to portal with session ID
         return f'<html><body><script>window.location.href="/?session={session_id}";</script></body></html>'
+
+    # Protected rating page: only users with an existing session can access
+    @app.route("/rating", methods=["GET"])
+    def rating_page():
+        """Render the rating page for the current device if it has a session."""
+        from routes.portal import get_device_identifier
+
+        client_ip = request.remote_addr or request.headers.get("X-Forwarded-For")
+        mac_address, is_cookie, set_cookie = get_device_identifier(request)
+
+        # Find a relevant session for this device (active or expired with bottles)
+        session = db.get_session_for_device(
+            mac_address=mac_address,
+            ip_address=client_ip,
+            statuses=(db.STATUS_ACTIVE, db.STATUS_EXPIRED),
+        )
+
+        if not session or session.get("bottles_inserted", 0) <= 0:
+            # No eligible session -> send back to main portal
+            return redirect(url_for("index"))
+
+        resp = make_response(render_template("rate.html"))
+        if set_cookie:
+            device_id = mac_address.replace("device:", "")
+            resp.set_cookie(
+                "device_id",
+                device_id,
+                max_age=60 * 60 * 24 * 365 * 5,
+                path="/",
+                samesite="Lax",
+            )
+        return resp
+
+    # Protected rating API: bind rating to the caller's own session
+    @app.route("/api/rating", methods=["POST"])
+    def submit_rating():
+        """Submit rating for the session associated with the current device."""
+        from routes.portal import get_device_identifier
+
+        client_ip = request.remote_addr or request.headers.get("X-Forwarded-For")
+        mac_address, is_cookie, set_cookie = get_device_identifier(request)
+
+        # Allow rating for any existing session of this device (including awaiting_insertion)
+        session = db.get_session_for_device(
+            mac_address=mac_address,
+            ip_address=client_ip,
+            statuses=db.ALL_SESSION_STATUSES,
+        )
+
+        if not session:
+            return jsonify({"error": "No eligible session for rating"}), 403
+
+        session_id = session["id"]
+
+        # ✅ One review per session
+        existing = db.get_rating_by_session(session_id)
+        if existing:
+            return jsonify({"error": "Rating already submitted for this session"}), 409
+
+        data = request.get_json(silent=True) or {}
+
+        # Validate that all q1..q10 are present and in [1, 5]
+        answers = {}
+        missing = []
+        for i in range(1, 11):
+            key = f"q{i}"
+            raw = data.get(key)
+            if raw is None or raw == "":
+                missing.append(key)
+                continue
+            try:
+                v = int(raw)
+            except (TypeError, ValueError):
+                return jsonify({"error": f"Invalid value for {key}"}), 400
+            if v < 1 or v > 5:
+                return jsonify({"error": f"Value for {key} must be between 1 and 5"}), 400
+            answers[key] = v
+
+        if missing:
+            return jsonify({
+                "error": "All questions q1–q10 are required",
+                "missing": missing,
+            }), 400
+
+        comment = (data.get("comment") or "").strip()
+
+        try:
+            db.submit_rating(session_id, answers, comment or None)
+        except Exception as e:
+            current_app.logger.exception("Failed to submit rating for session %s", session_id)
+            return jsonify({"error": "Failed to submit rating", "detail": str(e)}), 500
+
+        resp = make_response(jsonify({"success": True}), 200)
+        if set_cookie:
+            device_id = mac_address.replace("device:", "")
+            resp.set_cookie(
+                "device_id",
+                device_id,
+                max_age=60 * 60 * 24 * 365 * 5,
+                path="/",
+                samesite="Lax",
+            )
+        return resp
+
+    @app.route("/api/rating/status", methods=["GET"])
+    def rating_status():
+        """Return whether the current device's session already has a rating."""
+        from routes.portal import get_device_identifier
+
+        client_ip = request.remote_addr or request.headers.get("X-Forwarded-For")
+        mac_address, is_cookie, set_cookie = get_device_identifier(request)
+
+        session = db.get_session_for_device(
+            mac_address=mac_address,
+            ip_address=client_ip,
+            statuses=db.ALL_SESSION_STATUSES,
+        )
+
+        if not session:
+            return jsonify({"has_session": False, "has_rating": False}), 200
+
+        session_id = session["id"]
+        existing = db.get_rating_by_session(session_id)
+        return jsonify({
+            "has_session": True,
+            "has_rating": bool(existing),
+            "session_id": session_id,
+        }), 200
 
     return app
 

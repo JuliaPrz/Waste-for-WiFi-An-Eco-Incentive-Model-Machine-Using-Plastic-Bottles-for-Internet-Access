@@ -72,7 +72,7 @@ def _create_tables(db):
             CHECK (status IN ('awaiting_insertion', 'inserting', 'active', 'expired'))
         )
     ''')
-    
+
     # Enforce at most one row with status='inserting'
     db.execute('''
         CREATE UNIQUE INDEX IF NOT EXISTS idx_single_inserting
@@ -95,7 +95,21 @@ def _create_tables(db):
             ))
         )
     ''')
-    
+
+    # ✅ RATINGS TABLE (needed by submit_rating)
+    db.execute('''
+        CREATE TABLE IF NOT EXISTS ratings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL,
+            q1 INTEGER, q2 INTEGER, q3 INTEGER, q4 INTEGER, q5 INTEGER,
+            q6 INTEGER, q7 INTEGER, q8 INTEGER, q9 INTEGER, q10 INTEGER,
+            comment TEXT,
+            submitted_at INTEGER NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+        )
+    ''')
+    db.execute('CREATE INDEX IF NOT EXISTS idx_ratings_session ON ratings(session_id)')
+
     # Create indexes
     db.execute('CREATE INDEX IF NOT EXISTS idx_sessions_mac ON sessions(mac_address)')
     db.execute('CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status)')

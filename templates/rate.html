@@ -319,34 +319,6 @@
       <footer class="site-footer">© 2026 EcoNeT. All rights reserved.</footer>
     </div>
 
-    <script>
-      function getSessionId(){
-        const path = window.location.pathname.split('/');
-        if(path.length >= 3 && path[1] === 'rating') return path[2] || '';
-        const url = new URL(window.location.href);
-        return url.searchParams.get('session_id') || '';
-      }
-
-      document.addEventListener('DOMContentLoaded', ()=>{
-        const sid = getSessionId();
-        const sidEl = document.getElementById('session-id'); if(sidEl) sidEl.value = sid;
-
-        document.getElementById('rating-form').addEventListener('submit', async (e)=>{
-          e.preventDefault();
-          const session = sid || document.getElementById('session-id').value;
-          if(!session) return alert('Session missing');
-          const payload = {};
-          for(let i=1;i<=10;i++){
-            payload[`q${i}`] = document.querySelector(`input[name="q${i}"]:checked`)?.value || 0;
-          }
-          payload.comment = document.getElementById('rating-comment').value || '';
-          try{
-            await fetch(`/api/rating/${session}`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
-            alert('Thanks for your feedback');
-            window.location.href = '/';
-          }catch(err){ console.error(err); alert('Failed to submit'); }
-        });
-      });
-    </script>
+    <script type="module" src="/static/js/rating.js"></script>
   </body>
 </html>

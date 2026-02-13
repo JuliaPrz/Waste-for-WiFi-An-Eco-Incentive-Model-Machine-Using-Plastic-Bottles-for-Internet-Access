@@ -121,26 +121,38 @@ document.addEventListener('DOMContentLoaded', async () => {
       });
     }
 
-    // Rate button: navigate to rate page with session id
+    // Rate button: navigate to protected rating page
     const rateBtn = $('btn-rate');
     if (rateBtn) {
       rateBtn.addEventListener('click', (e) => {
         e.preventDefault();
-        const sid =
-          getCurrentSessionId() ||
-          new URL(window.location.href).searchParams.get('session_id') ||
-          new URL(window.location.href).searchParams.get('session');
-        if (!sid) {
-          console.warn('Rate clicked but no session id available');
-          return;
-        }
-        window.location.href = `/rate.html?session_id=${encodeURIComponent(sid)}`;
+        window.location.href = '/rating';
       });
     }
 
-    // Rate button: require session
-    attachGuardedButton('btn-rate', () => openModal('modal-rate'));
+    // After wiring buttons, check if this session already has a rating
+    async function initRatingButtonState() {
+      const btn = $('btn-rate');
+      if (!btn) return;
+      try {
+        const res = await fetch('/api/rating/status', { method: 'GET' });
+        if (!res.ok) return;
+        const info = await res.json().catch(() => ({}));
+        if (info.has_rating) {
+          // Disable the button if rating already submitted for this session
+          btn.disabled = true;
+          btn.classList.add('disabled');
+          btn.setAttribute('aria-disabled', 'true');
+        }
+      } catch (e) {
+        console.warn('Failed to check rating status', e);
+      }
+    }
 
+    initRatingButtonState();
+
+    // Remove any older attachGuardedButton('btn-rate', ...) logic below
+    // ...existing code...
     const mockBottleBtn = $('mock-bottle-btn');
     if (mockBottleBtn) {
       mockBottleBtn.addEventListener('click', () => {
@@ -155,6 +167,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     initMockDevPanel();
+
+    // ✅ If we just returned from rating page, show success toast once
+    try {
+      const flag = window.localStorage.getItem('rating_submitted');
+      if (flag === '1' && window.showToast) {
+        window.showToast('Thanks for your feedback!', 'success', 4000);
+      }
+      if (flag !== null) {
+        window.localStorage.removeItem('rating_submitted');
+      }
+    } catch (_) {}
+
   } catch (err) {
     console.error('Error in DOMContentLoaded handler:', err);
   }
