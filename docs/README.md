@@ -23,3 +23,5 @@ This `docs/` folder explains how the system works and how to run it on a Raspber
 
 - [GitHub Desktop setup (Windows)](setup-github-desktop-windows.md)  
   Quick start guide for mentees to clone, run, and contribute using GitHub Desktop on Windows.
+
+---
